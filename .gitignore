@@ -1,0 +1,22 @@
+# Node
+node_modules/
+.next/
+dist/
+build/
+*.log
+.env
+.env.local
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Misc
+.DS_Store
+*.swp
+coverage/

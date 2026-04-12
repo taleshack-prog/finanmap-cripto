@@ -1,0 +1,78 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: finanmap_db
+    environment:
+      POSTGRES_DB: finanmap_cripto
+      POSTGRES_USER: finanmap_user
+      POSTGRES_PASSWORD: senha123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U finanmap_user -d finanmap_cripto"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: finanmap_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    container_name: finanmap_backend
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    ports:
+      - "3001:3001"
+    environment:
+      DATABASE_URL: postgresql://finanmap_user:senha123@db:5432/finanmap_cripto
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: mude_em_producao
+      PORT: 3001
+      NODE_ENV: production
+      FRONTEND_URL: http://localhost:3000
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    container_name: finanmap_frontend
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:3001
+      NEXT_PUBLIC_GA_URL: http://localhost:8000
+    restart: unless-stopped
+
+  ga-engine:
+    build: ./ga-engine
+    container_name: finanmap_ga
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://finanmap_user:senha123@db:5432/finanmap_cripto
+      REDIS_URL: redis://redis:6379
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
