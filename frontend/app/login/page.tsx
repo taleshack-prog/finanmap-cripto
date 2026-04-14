@@ -30,7 +30,7 @@ export default function LoginPage() {
 
       localStorage.setItem('finanmap_token', data.token)
       localStorage.setItem('finanmap_user',  JSON.stringify(data.user))
-      router.push('/dashboard')
+      window.location.href = '/dashboard'
     } catch (e: any) {
       setError(e.message)
     } finally {
