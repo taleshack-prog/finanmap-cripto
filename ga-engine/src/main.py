@@ -18,6 +18,9 @@ from src.services.technical_analysis import generate_technical_signals
 from src.services.data_service import (
     get_ohlcv, get_ticker, get_order_book, get_multiple_tickers
 )
+from src.services.portfolio_service import (
+    get_binance_balances, get_prices_for_symbols
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -233,6 +236,36 @@ async def optimize(req: OptimizeRequest):
     except Exception as e:
         logger.error(f"Erro otimização: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/portfolio/binance")
+async def portfolio_binance():
+    try:
+        assets = get_binance_balances(BINANCE_KEY, BINANCE_SECRET)
+        total = sum(a["value_usdt"] for a in assets)
+        for a in assets:
+            a["allocation_pct"] = round(a["value_usdt"] / total * 100, 2) if total > 0 else 0
+        return {"total_usdt": round(total, 2), "assets": assets, "count": len(assets), "source": "binance_real"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/portfolio/manual")
+async def portfolio_manual(data: dict):
+    from src.services.portfolio_service import get_prices_for_symbols, categorize
+    assets_in = data.get("assets", [])
+    symbols = [a["symbol"].upper() for a in assets_in]
+    prices = get_prices_for_symbols(symbols)
+    assets = []
+    for a in assets_in:
+        sym = a["symbol"].upper()
+        p = prices.get(sym, {"price": 0, "change_24h": 0})
+        val = a["quantity"] * p["price"]
+        assets.append({"symbol": sym, "quantity": a["quantity"], "price_usdt": p["price"], "value_usdt": round(val, 2), "change_24h": p["change_24h"], "category": categorize(sym), "allocation_pct": 0})
+    total = sum(a["value_usdt"] for a in assets)
+    for a in assets:
+        a["allocation_pct"] = round(a["value_usdt"] / total * 100, 2) if total > 0 else 0
+    return {"total_usdt": round(total, 2), "assets": sorted(assets, key=lambda x: x["value_usdt"], reverse=True), "count": len(assets), "source": "manual"}
 
 
 @app.post("/backtest")
