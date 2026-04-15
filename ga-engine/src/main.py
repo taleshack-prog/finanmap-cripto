@@ -1,6 +1,6 @@
 """
-FinanMap Cripto - GA Engine v6
-GA Population + Análise Técnica + Fluxo + Análise Quantitativa
+FinanMap Cripto - GA Engine v7
+GA Population + Técnica + Fluxo + Quantitativa + On-Chain
 """
 
 from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
@@ -9,7 +9,6 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict
 import time, logging, numpy as np, os
 
-from src.core.genetic_algorithm import GeneticAlgorithm
 from src.core.trading_bot import TradingBot, BotConfig
 from src.core.ga_population import GAPopulation
 from src.services.metrics_service import (
@@ -17,10 +16,10 @@ from src.services.metrics_service import (
     calculate_max_drawdown, calculate_win_rate
 )
 from src.services.technical_analysis import generate_technical_signals
-from src.services.quantitative_analysis import (
-    quantitative_score, historical_volatility,
-    price_zscore, momentum, sharpe_rolling,
-    correlation_matrix, beta_vs_btc
+from src.services.quantitative_analysis import quantitative_score, correlation_matrix
+from src.services.onchain_analysis import (
+    get_btc_stats, get_mempool_stats, get_eth_stats,
+    get_btc_chart, get_mempool_blocks, onchain_score
 )
 from src.services.data_service import (
     get_ohlcv, get_ticker, get_order_book, get_multiple_tickers
@@ -34,20 +33,19 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="FinanMap Cripto - GA Engine",
-    description="GA Population + Técnica + Fluxo + Quantitativa",
-    version="6.0.0"
+    description="GA + Técnica + Fluxo + Quantitativa + On-Chain",
+    version="7.0.0"
 )
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://localhost:3010", "http://localhost:3020"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
 )
 
 BINANCE_KEY    = os.getenv("BINANCE_API_KEY", "")
 BINANCE_SECRET = os.getenv("BINANCE_SECRET",  "")
+ETHERSCAN_KEY  = os.getenv("ETHERSCAN_API_KEY", "")
 
 active_bots: Dict[str, TradingBot] = {}
 ga_jobs:     Dict[str, dict]       = {}
@@ -65,29 +63,27 @@ class GAPopulationRequest(BaseModel):
     job_id:          Optional[str] = None
 
 class BotStartRequest(BaseModel):
-    bot_id:              str
-    user_id:             str
-    strategy_id:         str
-    symbol:              str   = "BTC/USDT"
-    timeframe:           str   = "1h"
-    capital:             float = 1000.0
-    max_position:        float = 0.1
-    stop_loss_pct:       float = 2.0
-    take_profit_pct:     float = 4.0
-    min_signal:          float = 0.05
-    dry_run:             bool  = True
-    api_key:             str   = ""
-    api_secret:          str   = ""
-    exchange:            str   = "binance"
-    w_rsi:               float = 0.25
-    w_macd:              float = 0.25
-    w_bollinger:         float = 0.25
-    w_ema:               float = 0.25
-    use_flow_filter:     bool  = True
-    min_buy_pressure:    float = 0.52
-    max_spread_pct:      float = 0.05
-    use_quant_filter:    bool  = True
-    min_quant_score:     float = -0.2
+    bot_id:           str
+    user_id:          str
+    strategy_id:      str
+    symbol:           str   = "BTC/USDT"
+    timeframe:        str   = "1h"
+    capital:          float = 1000.0
+    max_position:     float = 0.1
+    stop_loss_pct:    float = 2.0
+    take_profit_pct:  float = 4.0
+    min_signal:       float = 0.05
+    dry_run:          bool  = True
+    api_key:          str   = ""
+    api_secret:       str   = ""
+    exchange:         str   = "binance"
+    w_rsi:            float = 0.25
+    w_macd:           float = 0.25
+    w_bollinger:      float = 0.25
+    w_ema:            float = 0.25
+    use_flow_filter:  bool  = True
+    min_buy_pressure: float = 0.52
+    max_spread_pct:   float = 0.05
 
 class TechnicalRequest(BaseModel):
     closes:  List[float]
@@ -97,9 +93,9 @@ class TechnicalRequest(BaseModel):
     symbol:  Optional[str] = "BTC/USDT"
 
 class QuantRequest(BaseModel):
-    closes:      List[float]
-    btc_closes:  Optional[List[float]] = None
-    symbol:      Optional[str] = "BTC/USDT"
+    closes:     List[float]
+    btc_closes: Optional[List[float]] = None
+    symbol:     Optional[str] = "BTC/USDT"
 
 class CorrelationRequest(BaseModel):
     assets: Dict[str, List[float]]
@@ -116,117 +112,65 @@ class BacktestRequest(BaseModel):
 @app.get("/status")
 def status():
     return {
-        "status":      "GA Engine OK",
-        "version":     "6.0.0",
-        "timestamp":   int(time.time()),
-        "features":    ["ga_population", "trading_bot", "technical_analysis", "quantitative_analysis", "flow_filter", "real_market_data"],
+        "status":    "GA Engine OK",
+        "version":   "7.0.0",
+        "timestamp": int(time.time()),
+        "features":  ["ga_population", "trading_bot", "technical", "quantitative", "flow", "onchain"],
         "active_bots": len(active_bots),
         "ga_jobs":     len(ga_jobs),
     }
 
 
-# ─── ANÁLISE QUANTITATIVA ───────────────────────────────────
+# ─── ON-CHAIN ROUTES ────────────────────────────────────────
 
-@app.get("/analyze/quantitative")
-async def analyze_quantitative_live(
-    symbol:     str = Query("BTC/USDT"),
-    timeframe:  str = Query("1h"),
-    limit:      int = Query(500),
-    btc_symbol: str = Query("BTC/USDT"),
-    exchange:   str = Query("binance"),
-):
-    """Análise quantitativa completa com dados reais"""
+@app.get("/onchain/btc")
+async def onchain_btc():
+    """Estatísticas on-chain BTC via Blockchain.com"""
     try:
-        ohlcv = get_ohlcv(symbol, timeframe, limit, exchange, BINANCE_KEY, BINANCE_SECRET)
-        closes = ohlcv["closes"]
+        return await get_btc_stats()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-        btc_closes = None
-        if symbol != btc_symbol:
-            btc_ohlcv  = get_ohlcv(btc_symbol, timeframe, limit, exchange, BINANCE_KEY, BINANCE_SECRET)
-            btc_closes = btc_ohlcv["closes"]
+@app.get("/onchain/mempool")
+async def onchain_mempool():
+    """Mempool BTC via mempool.space — fees e congestionamento"""
+    try:
+        stats  = await get_mempool_stats()
+        blocks = await get_mempool_blocks()
+        return {"mempool": stats, "next_blocks": blocks, "timestamp": int(time.time())}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-        result = quantitative_score(closes, btc_closes)
-        return {
-            "symbol":       symbol,
-            "timeframe":    timeframe,
-            "candles":      len(closes),
-            "latest_price": closes[-1],
-            "quantitative": result,
-            "timestamp":    int(time.time()),
-        }
+@app.get("/onchain/eth")
+async def onchain_eth():
+    """Gas prices ETH via Etherscan"""
+    try:
+        return await get_eth_stats(ETHERSCAN_KEY)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/onchain/chart/{chart_name}")
+async def onchain_chart(chart_name: str, timespan: str = Query("30days")):
+    """
+    Gráficos históricos on-chain BTC via Blockchain.com.
+    chart_name: hash-rate | n-transactions | estimated-transaction-volume-usd |
+                miners-revenue | transaction-fees-usd | mempool-size
+    """
+    try:
+        return await get_btc_chart(chart_name, timespan)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/onchain/score/{symbol}")
+async def onchain_score_route(symbol: str = "BTC"):
+    """Score on-chain consolidado para uso no robô (-1 a +1)"""
+    try:
+        return await onchain_score(symbol.upper())
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.post("/analyze/quantitative")
-async def analyze_quantitative_post(req: QuantRequest):
-    """Análise quantitativa com dados fornecidos"""
-    if len(req.closes) < 30:
-        raise HTTPException(status_code=400, detail="Mínimo 30 candles")
-    try:
-        result = quantitative_score(req.closes, req.btc_closes)
-        return {"symbol": req.symbol, "quantitative": result, "timestamp": int(time.time())}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/analyze/volatility")
-async def analyze_volatility(
-    symbol:    str = Query("BTC/USDT"),
-    timeframe: str = Query("1h"),
-    limit:     int = Query(200),
-    exchange:  str = Query("binance"),
-):
-    """Análise de volatilidade histórica e regime de mercado"""
-    try:
-        ohlcv  = get_ohlcv(symbol, timeframe, limit, exchange, BINANCE_KEY, BINANCE_SECRET)
-        vol    = historical_volatility(ohlcv["closes"])
-        zs     = price_zscore(ohlcv["closes"])
-        mom    = momentum(ohlcv["closes"])
-        sr     = sharpe_rolling(ohlcv["closes"])
-        return {
-            "symbol":      symbol,
-            "price":       ohlcv["closes"][-1],
-            "volatility":  vol,
-            "zscore":      zs,
-            "momentum":    mom,
-            "sharpe":      sr,
-            "timestamp":   int(time.time()),
-        }
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@app.post("/analyze/correlation")
-async def analyze_correlation(req: CorrelationRequest):
-    """Matriz de correlação entre múltiplos ativos"""
-    try:
-        result = correlation_matrix(req.assets)
-        return {"correlation": result, "timestamp": int(time.time())}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/analyze/correlation/live")
-async def analyze_correlation_live(
-    symbols:   str = Query("BTC/USDT,ETH/USDT,SOL/USDT"),
-    timeframe: str = Query("1h"),
-    limit:     int = Query(200),
-    exchange:  str = Query("binance"),
-):
-    """Correlação entre ativos com dados reais"""
-    try:
-        symbol_list = [s.strip() for s in symbols.split(",")]
-        assets = {}
-        for sym in symbol_list:
-            ohlcv = get_ohlcv(sym, timeframe, limit, exchange, BINANCE_KEY, BINANCE_SECRET)
-            name  = sym.replace("/USDT", "").replace("/BTC", "")
-            assets[name] = ohlcv["closes"]
-        result = correlation_matrix(assets)
-        return {"symbols": symbol_list, "correlation": result, "timestamp": int(time.time())}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
+# ─── ANÁLISE COMPLETA (4 camadas) ───────────────────────────
 
 @app.get("/analyze/full")
 async def analyze_full(
@@ -236,57 +180,146 @@ async def analyze_full(
     exchange:  str = Query("binance"),
 ):
     """
-    Análise completa: técnica + quantitativa + fluxo.
-    Endpoint principal para o dashboard.
+    Análise completa com 4 camadas:
+    Técnica (GA) + Quantitativa + Fluxo + On-Chain
     """
     try:
-        ohlcv   = get_ohlcv(symbol, timeframe, limit, exchange, BINANCE_KEY, BINANCE_SECRET)
-        closes  = ohlcv["closes"]
-        ticker  = get_ticker(symbol, exchange)
-        ob      = get_order_book(symbol, 20, exchange)
+        base_symbol = symbol.replace("/USDT", "").replace("/BTC", "")
 
-        # Análise técnica
-        tech = generate_technical_signals(closes, ohlcv["highs"], ohlcv["lows"], ohlcv["volumes"])
+        # Busca dados em paralelo
+        ohlcv_task    = get_ohlcv(symbol, timeframe, limit, exchange, BINANCE_KEY, BINANCE_SECRET)
+        ticker_task   = get_ticker(symbol, exchange)
+        ob_task       = get_order_book(symbol, 20, exchange)
+        onchain_task  = onchain_score(base_symbol)
 
-        # Análise quantitativa
+        import asyncio
+        ohlcv, ticker, ob, onchain = await asyncio.gather(
+            asyncio.to_thread(lambda: ohlcv_task),
+            asyncio.to_thread(lambda: ticker_task),
+            asyncio.to_thread(lambda: ob_task),
+            onchain_task,
+            return_exceptions=True
+        )
+
+        closes = ohlcv["closes"] if isinstance(ohlcv, dict) else []
+
+        # 1. Análise técnica
+        tech = generate_technical_signals(
+            closes, ohlcv.get("highs"), ohlcv.get("lows"), ohlcv.get("volumes")
+        ) if closes else {"signal": 0, "confidence": 0, "direction": "HOLD"}
+
+        # 2. Análise quantitativa
         btc_closes = None
-        if symbol != "BTC/USDT":
-            btc_ohlcv  = get_ohlcv("BTC/USDT", timeframe, limit, exchange, BINANCE_KEY, BINANCE_SECRET)
-            btc_closes = btc_ohlcv["closes"]
-        quant = quantitative_score(closes, btc_closes)
+        if symbol != "BTC/USDT" and closes:
+            try:
+                btc_ohlcv  = get_ohlcv("BTC/USDT", timeframe, limit, exchange, BINANCE_KEY, BINANCE_SECRET)
+                btc_closes = btc_ohlcv["closes"]
+            except Exception:
+                pass
+        quant = quantitative_score(closes, btc_closes) if closes else {"score": 0, "direction": "HOLD"}
 
-        # Fluxo
-        flow = {
-            "buy_pressure":  ob.get("buy_pressure", 0.5),
-            "sell_pressure": ob.get("sell_pressure", 0.5),
-            "spread_pct":    ob.get("spread_pct", 0),
-            "change_24h":    ticker.get("change_24h", 0),
-        }
-        flow_score = (flow["buy_pressure"] - 0.5) * 4
-        flow["flow_score"] = round(float(np.clip(flow_score, -1, 1)), 4)
+        # 3. Fluxo
+        flow_score = 0.0
+        flow       = {}
+        if isinstance(ob, dict):
+            bp         = ob.get("buy_pressure", 0.5)
+            flow_score = float(np.clip((bp - 0.5) * 4, -1, 1))
+            ch24       = ticker.get("change_24h", 0) if isinstance(ticker, dict) else 0
+            flow = {
+                "buy_pressure":  bp,
+                "sell_pressure": ob.get("sell_pressure", 0.5),
+                "spread_pct":    ob.get("spread_pct", 0),
+                "change_24h":    ch24,
+                "flow_score":    round(flow_score, 4),
+            }
 
-        # Score combinado das 3 análises
+        # 4. On-chain score
+        oc_score = onchain.get("score", 0.0) if isinstance(onchain, dict) else 0.0
+
+        # Score técnico normalizado
+        tech_dir = tech.get("direction", "HOLD")
+        tech_conf = tech.get("confidence", 0)
+        tech_score = tech_conf * (1 if tech_dir == "BUY" else -1 if tech_dir == "SELL" else 0)
+
+        # Score combinado das 4 análises
         combined = (
-            0.40 * (tech.get("signal", 0) if isinstance(tech.get("signal"), float) else
-                    (1 if tech.get("direction") == "BUY" else -1 if tech.get("direction") == "SELL" else 0) * tech.get("confidence", 0)) +
-            0.35 * quant["score"] +
-            0.25 * flow["flow_score"]
+            0.35 * tech_score  +
+            0.25 * quant.get("score", 0) +
+            0.20 * flow_score  +
+            0.20 * oc_score
         )
         combined = float(np.clip(combined, -1, 1))
 
         return {
             "symbol":    symbol,
             "timeframe": timeframe,
-            "price":     closes[-1],
+            "price":     closes[-1] if closes else 0,
             "technical": tech,
             "quantitative": quant,
             "flow":      flow,
+            "onchain":   onchain if isinstance(onchain, dict) else {"score": 0},
             "combined_score":     round(combined, 4),
             "combined_direction": "BUY" if combined > 0.1 else "SELL" if combined < -0.1 else "HOLD",
+            "weights": {"technical": 0.35, "quantitative": 0.25, "flow": 0.20, "onchain": 0.20},
             "timestamp": int(time.time()),
         }
     except Exception as e:
+        logger.error(f"Erro analyze/full: {e}")
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ─── ANÁLISE QUANTITATIVA ───────────────────────────────────
+
+@app.get("/analyze/quantitative")
+async def analyze_quant_live(symbol: str = Query("BTC/USDT"), timeframe: str = Query("1h"), limit: int = Query(500), exchange: str = Query("binance")):
+    try:
+        ohlcv = get_ohlcv(symbol, timeframe, limit, exchange, BINANCE_KEY, BINANCE_SECRET)
+        btc_closes = None
+        if symbol != "BTC/USDT":
+            btc = get_ohlcv("BTC/USDT", timeframe, limit, exchange, BINANCE_KEY, BINANCE_SECRET)
+            btc_closes = btc["closes"]
+        result = quantitative_score(ohlcv["closes"], btc_closes)
+        return {"symbol": symbol, "candles": len(ohlcv["closes"]), "latest_price": ohlcv["closes"][-1], "quantitative": result, "timestamp": int(time.time())}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/analyze/volatility")
+async def analyze_volatility(symbol: str = Query("BTC/USDT"), timeframe: str = Query("1h"), limit: int = Query(200), exchange: str = Query("binance")):
+    from src.services.quantitative_analysis import historical_volatility, price_zscore, momentum, sharpe_rolling
+    try:
+        ohlcv = get_ohlcv(symbol, timeframe, limit, exchange, BINANCE_KEY, BINANCE_SECRET)
+        closes = ohlcv["closes"]
+        return {"symbol": symbol, "price": closes[-1], "volatility": historical_volatility(closes), "zscore": price_zscore(closes), "momentum": momentum(closes), "sharpe": sharpe_rolling(closes), "timestamp": int(time.time())}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/analyze/correlation/live")
+async def analyze_correlation_live(symbols: str = Query("BTC/USDT,ETH/USDT,SOL/USDT"), timeframe: str = Query("1h"), limit: int = Query(200), exchange: str = Query("binance")):
+    try:
+        symbol_list = [s.strip() for s in symbols.split(",")]
+        assets = {}
+        for sym in symbol_list:
+            ohlcv = get_ohlcv(sym, timeframe, limit, exchange, BINANCE_KEY, BINANCE_SECRET)
+            assets[sym.replace("/USDT","").replace("/BTC","")] = ohlcv["closes"]
+        return {"symbols": symbol_list, "correlation": correlation_matrix(assets), "timestamp": int(time.time())}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/analyze/live")
+async def analyze_live(symbol: str = Query("BTC/USDT"), timeframe: str = Query("1h"), limit: int = Query(100), exchange: str = Query("binance")):
+    try:
+        ohlcv = get_ohlcv(symbol, timeframe, limit, exchange, BINANCE_KEY, BINANCE_SECRET)
+        signals = generate_technical_signals(ohlcv["closes"], ohlcv["highs"], ohlcv["lows"], ohlcv["volumes"])
+        return {"symbol": symbol, "timeframe": timeframe, "candles": ohlcv["count"], "analysis": signals, "latest_price": ohlcv["closes"][-1], "timestamp": int(time.time())}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/analyze/technical")
+async def analyze_technical(req: TechnicalRequest):
+    if len(req.closes) < 30: raise HTTPException(status_code=400, detail="Mínimo 30 candles")
+    try:
+        return {"symbol": req.symbol, "analysis": generate_technical_signals(req.closes, req.highs, req.lows, req.volumes), "timestamp": int(time.time())}
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 
 # ─── GA POPULATION ──────────────────────────────────────────
@@ -301,12 +334,9 @@ async def ga_evolve(req: GAPopulationRequest, background_tasks: BackgroundTasks)
         try:
             ga = GAPopulation(population_size=req.population_size, generations=req.generations, symbol=req.symbol, timeframe=req.timeframe, data_limit=req.data_limit, exchange=req.exchange, api_key=BINANCE_KEY, api_secret=BINANCE_SECRET)
             result = ga.run()
-            ga_jobs[job_id]["status"] = "completed"
-            ga_jobs[job_id]["result"] = result
-            ga_jobs[job_id]["completed_at"] = int(time.time())
+            ga_jobs[job_id].update({"status": "completed", "result": result, "completed_at": int(time.time())})
         except Exception as e:
-            ga_jobs[job_id]["status"] = "error"
-            ga_jobs[job_id]["error"]  = str(e)
+            ga_jobs[job_id].update({"status": "error", "error": str(e)})
     background_tasks.add_task(run_ga)
     return {"job_id": job_id, "status": "running", "check_at": f"/ga/result/{job_id}"}
 
@@ -315,8 +345,7 @@ async def ga_evolve_sync(req: GAPopulationRequest):
     try:
         ga = GAPopulation(population_size=req.population_size, generations=req.generations, symbol=req.symbol, timeframe=req.timeframe, data_limit=req.data_limit, exchange=req.exchange, api_key=BINANCE_KEY, api_secret=BINANCE_SECRET)
         return ga.run()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/ga/result/{job_id}")
 async def ga_result(job_id: str):
@@ -333,17 +362,7 @@ async def ga_jobs_list():
 @app.post("/bot/start")
 async def bot_start(req: BotStartRequest):
     if req.bot_id in active_bots: raise HTTPException(status_code=400, detail="Bot já rodando")
-    config = BotConfig(
-        bot_id=req.bot_id, user_id=req.user_id, strategy_id=req.strategy_id,
-        symbol=req.symbol, timeframe=req.timeframe, capital=req.capital,
-        max_position=req.max_position, stop_loss_pct=req.stop_loss_pct,
-        take_profit_pct=req.take_profit_pct, min_signal=req.min_signal,
-        dry_run=req.dry_run, api_key=req.api_key or BINANCE_KEY,
-        api_secret=req.api_secret or BINANCE_SECRET, exchange=req.exchange,
-        w_rsi=req.w_rsi, w_macd=req.w_macd, w_bollinger=req.w_bollinger, w_ema=req.w_ema,
-        use_flow_filter=req.use_flow_filter, min_buy_pressure=req.min_buy_pressure,
-        max_spread_pct=req.max_spread_pct,
-    )
+    config = BotConfig(bot_id=req.bot_id, user_id=req.user_id, strategy_id=req.strategy_id, symbol=req.symbol, timeframe=req.timeframe, capital=req.capital, max_position=req.max_position, stop_loss_pct=req.stop_loss_pct, take_profit_pct=req.take_profit_pct, min_signal=req.min_signal, dry_run=req.dry_run, api_key=req.api_key or BINANCE_KEY, api_secret=req.api_secret or BINANCE_SECRET, exchange=req.exchange, w_rsi=req.w_rsi, w_macd=req.w_macd, w_bollinger=req.w_bollinger, w_ema=req.w_ema, use_flow_filter=req.use_flow_filter, min_buy_pressure=req.min_buy_pressure, max_spread_pct=req.max_spread_pct)
     bot = TradingBot(config)
     active_bots[req.bot_id] = bot
     await bot.start()
@@ -396,25 +415,6 @@ async def portfolio_prices(symbols: str = Query("BTC/USDT,ETH/USDT,SOL/USDT"), e
     except Exception as e: raise HTTPException(status_code=400, detail=str(e))
 
 
-# ─── ANÁLISE TÉCNICA ────────────────────────────────────────
-
-@app.get("/analyze/live")
-async def analyze_live(symbol: str = Query("BTC/USDT"), timeframe: str = Query("1h"), limit: int = Query(100), exchange: str = Query("binance")):
-    try:
-        ohlcv = get_ohlcv(symbol, timeframe, limit, exchange, BINANCE_KEY, BINANCE_SECRET)
-        signals = generate_technical_signals(ohlcv["closes"], ohlcv["highs"], ohlcv["lows"], ohlcv["volumes"])
-        return {"symbol": symbol, "timeframe": timeframe, "candles": ohlcv["count"], "analysis": signals, "latest_price": ohlcv["closes"][-1], "timestamp": int(time.time())}
-    except Exception as e: raise HTTPException(status_code=400, detail=str(e))
-
-@app.post("/analyze/technical")
-async def analyze_technical(req: TechnicalRequest):
-    if len(req.closes) < 30: raise HTTPException(status_code=400, detail="Mínimo 30 candles")
-    try:
-        result = generate_technical_signals(req.closes, req.highs, req.lows, req.volumes)
-        return {"symbol": req.symbol, "analysis": result, "timestamp": int(time.time())}
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
-
-
 # ─── PORTFÓLIO ──────────────────────────────────────────────
 
 @app.get("/portfolio/binance")
@@ -431,8 +431,7 @@ async def portfolio_binance(api_key: Optional[str] = Query(None), secret: Option
 @app.post("/portfolio/manual")
 async def portfolio_manual(data: dict):
     assets_in = data.get("assets", [])
-    symbols   = [a["symbol"].upper() for a in assets_in]
-    prices    = get_prices_for_symbols(symbols)
+    prices    = get_prices_for_symbols([a["symbol"].upper() for a in assets_in])
     assets    = []
     for a in assets_in:
         sym = a["symbol"].upper()
@@ -456,12 +455,4 @@ async def backtest(req: BacktestRequest):
     for r in returns:
         capital *= (1 + r); equity.append(round(capital, 2))
     wins = sum(1 for r in returns if r > 0)
-    return {
-        "total_return":  round(((equity[-1] - req.initial_capital) / req.initial_capital) * 100, 2),
-        "sharpe_ratio":  round(calculate_sharpe_ratio(returns.tolist()), 4),
-        "sortino_ratio": round(calculate_sortino_ratio(returns.tolist()), 4),
-        "max_drawdown":  round(calculate_max_drawdown(returns.tolist()) * 100, 2),
-        "num_trades":    int(n), "win_rate": round(wins / n * 100, 2),
-        "profit_factor": round(sum(r for r in returns if r > 0) / abs(sum(r for r in returns if r < 0)), 2),
-        "equity_curve":  equity, "initial_capital": req.initial_capital, "final_capital": round(equity[-1], 2),
-    }
+    return {"total_return": round(((equity[-1]-req.initial_capital)/req.initial_capital)*100,2), "sharpe_ratio": round(calculate_sharpe_ratio(returns.tolist()),4), "sortino_ratio": round(calculate_sortino_ratio(returns.tolist()),4), "max_drawdown": round(calculate_max_drawdown(returns.tolist())*100,2), "num_trades": int(n), "win_rate": round(wins/n*100,2), "profit_factor": round(sum(r for r in returns if r>0)/abs(sum(r for r in returns if r<0)),2), "equity_curve": equity, "initial_capital": req.initial_capital, "final_capital": round(equity[-1],2)}
