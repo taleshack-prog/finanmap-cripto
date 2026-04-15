@@ -347,4 +347,47 @@ async function _runGAAndSave(params: {
   }
 }
 
+// Proxy para portfolio Binance
+router.get('/portfolio/binance', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const r = await axios.get(`${GA_URL}/portfolio/binance`, { timeout: 15000 })
+    res.json(r.data)
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'Erro ao buscar portfólio' })
+  }
+})
+
+// Proxy analyze/full
+router.get('/analyze/full', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const { symbol = 'BTC/USDT', timeframe = '1h', limit = '200' } = req.query as any
+    const r = await axios.get(`${GA_URL}/analyze/full?symbol=${symbol}&timeframe=${timeframe}&limit=${limit}`, { timeout: 60000 })
+    res.json(r.data)
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message })
+  }
+})
+
+// Proxy analyze/fast — sem on-chain (rápido para o dashboard)
+router.get('/analyze/fast', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const { symbol = 'BTC/USDT', timeframe = '1h', limit = '100' } = req.query as any
+    const [techRes, quantRes] = await Promise.all([
+      axios.get(`${GA_URL}/analyze/live?symbol=${symbol}&timeframe=${timeframe}&limit=${limit}`, { timeout: 15000 }),
+      axios.get(`${GA_URL}/analyze/quantitative?symbol=${symbol}&timeframe=${timeframe}&limit=${limit}`, { timeout: 15000 }),
+    ])
+    res.json({
+      symbol,
+      price: techRes.data.latest_price,
+      technical: techRes.data.analysis,
+      quantitative: quantRes.data.quantitative,
+      combined_score: (techRes.data.analysis?.signal || 0) * 0.6 + (quantRes.data.quantitative?.score || 0) * 0.4,
+      combined_direction: techRes.data.analysis?.direction || 'HOLD',
+      timestamp: Date.now(),
+    })
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message })
+  }
+})
+
 export default router;
