@@ -49,47 +49,88 @@ def categorize(symbol: str) -> str:
     return "other"
 
 
+# Cache global
+_portfolio_cache: dict = {}
+PORTFOLIO_TTL = 30  # segundos
+
 def get_binance_balances(api_key: str, secret: str) -> list:
-    """Busca saldos reais da Binance via CCXT"""
+    """
+    Busca saldos reais da Binance via CCXT.
+    Cache de 30s para evitar chamadas repetidas.
+    Busca todos os tickers em lote (fetch_tickers) em vez de um por um.
+    """
+    cache_key = f"portfolio_{api_key[:8]}"
+    cached = _portfolio_cache.get(cache_key)
+    if cached and time.time() - cached["ts"] < PORTFOLIO_TTL:
+        logger.info("Portfolio: retornando cache")
+        return cached["data"]
+
     try:
         exchange = ccxt.binance({
             "apiKey": api_key,
             "secret": secret,
             "enableRateLimit": True,
         })
+
         balance = exchange.fetch_balance()
-        result = []
 
-        for symbol, data in balance["total"].items():
-            if data > 0:
-                # Pega preço em USDT
-                price_usdt = 1.0
-                if symbol not in STABLECOINS:
+        # Filtra ativos com saldo > 0
+        assets_raw = {
+            symbol: data
+            for symbol, data in balance["total"].items()
+            if data > 0
+        }
+
+        # Separa stablecoins de ativos que precisam de preço
+        need_price = [s for s in assets_raw if s not in STABLECOINS]
+
+        # Busca todos os tickers em UMA única chamada (muito mais rápido)
+        symbols_usdt = [f"{s}/USDT" for s in need_price]
+        tickers = {}
+        if symbols_usdt:
+            try:
+                raw = exchange.fetch_tickers(symbols_usdt)
+                tickers = raw
+            except Exception as e:
+                logger.warning(f"fetch_tickers falhou: {e} — tentando um por um")
+                for sym in symbols_usdt:
                     try:
-                        ticker = exchange.fetch_ticker(f"{symbol}/USDT")
-                        price_usdt = ticker["last"] or 0
-                        change_24h = ticker.get("percentage", 0) or 0
+                        tickers[sym] = exchange.fetch_ticker(sym)
                     except Exception:
-                        price_usdt = 0
-                        change_24h = 0
-                else:
-                    change_24h = 0
+                        pass
 
-                value_usdt = data * price_usdt
-                if value_usdt < 0.01:
-                    continue  # ignora dust
+        result = []
+        for symbol, quantity in assets_raw.items():
+            price_usdt = 1.0
+            change_24h = 0.0
 
-                result.append({
-                    "symbol":     symbol,
-                    "quantity":   data,
-                    "price_usdt": price_usdt,
-                    "value_usdt": round(value_usdt, 2),
-                    "change_24h": round(change_24h, 2),
-                    "category":   categorize(symbol),
-                    "source":     "binance",
-                })
+            if symbol not in STABLECOINS:
+                ticker = tickers.get(f"{symbol}/USDT", {})
+                price_usdt = ticker.get("last") or 0
+                change_24h = ticker.get("percentage") or 0
+                if not price_usdt:
+                    continue  # sem preço = ignora
 
-        return sorted(result, key=lambda x: x["value_usdt"], reverse=True)
+            value_usdt = quantity * price_usdt
+            if value_usdt < 0.01:
+                continue  # ignora dust
+
+            result.append({
+                "symbol":     symbol,
+                "quantity":   quantity,
+                "price_usdt": price_usdt,
+                "value_usdt": round(value_usdt, 2),
+                "change_24h": round(change_24h, 2),
+                "category":   categorize(symbol),
+                "source":     "binance",
+            })
+
+        result = sorted(result, key=lambda x: x["value_usdt"], reverse=True)
+
+        # Salva no cache
+        _portfolio_cache[cache_key] = {"ts": time.time(), "data": result}
+        logger.info(f"Portfolio Binance: {len(result)} ativos | cache atualizado")
+        return result
 
     except ccxt.AuthenticationError:
         raise ValueError("API Key ou Secret inválidos")
