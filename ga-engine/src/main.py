@@ -1,13 +1,13 @@
 """
-FinanMap Cripto - GA Engine v5
-GA Population (10 robôs competindo) + Análise Técnica + CCXT + Trading Bot
+FinanMap Cripto - GA Engine v6
+GA Population + Análise Técnica + Fluxo + Análise Quantitativa
 """
 
 from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict
-import time, logging, numpy as np, os, asyncio
+import time, logging, numpy as np, os
 
 from src.core.genetic_algorithm import GeneticAlgorithm
 from src.core.trading_bot import TradingBot, BotConfig
@@ -17,6 +17,11 @@ from src.services.metrics_service import (
     calculate_max_drawdown, calculate_win_rate
 )
 from src.services.technical_analysis import generate_technical_signals
+from src.services.quantitative_analysis import (
+    quantitative_score, historical_volatility,
+    price_zscore, momentum, sharpe_rolling,
+    correlation_matrix, beta_vs_btc
+)
 from src.services.data_service import (
     get_ohlcv, get_ticker, get_order_book, get_multiple_tickers
 )
@@ -29,8 +34,8 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="FinanMap Cripto - GA Engine",
-    description="GA Population (10 robôs) + Análise Técnica + CCXT + Trading Bot",
-    version="5.0.0"
+    description="GA Population + Técnica + Fluxo + Quantitativa",
+    version="6.0.0"
 )
 
 app.add_middleware(
@@ -44,9 +49,8 @@ app.add_middleware(
 BINANCE_KEY    = os.getenv("BINANCE_API_KEY", "")
 BINANCE_SECRET = os.getenv("BINANCE_SECRET",  "")
 
-# Registros em memória
-active_bots:       Dict[str, TradingBot]   = {}
-ga_jobs:           Dict[str, dict]          = {}  # jobs de otimização em andamento
+active_bots: Dict[str, TradingBot] = {}
+ga_jobs:     Dict[str, dict]       = {}
 
 
 # ─── SCHEMAS ────────────────────────────────────────────────
@@ -54,31 +58,36 @@ ga_jobs:           Dict[str, dict]          = {}  # jobs de otimização em anda
 class GAPopulationRequest(BaseModel):
     symbol:          str   = "BTC/USDT"
     timeframe:       str   = "1h"
-    data_limit:      int   = 100
+    data_limit:      int   = 500
     population_size: int   = 10
     generations:     int   = 20
     exchange:        str   = "binance"
     job_id:          Optional[str] = None
 
 class BotStartRequest(BaseModel):
-    bot_id:          str
-    user_id:         str
-    strategy_id:     str
-    symbol:          str   = "BTC/USDT"
-    timeframe:       str   = "1h"
-    capital:         float = 1000.0
-    max_position:    float = 0.1
-    stop_loss_pct:   float = 2.0
-    take_profit_pct: float = 4.0
-    min_signal:      float = 0.05
-    dry_run:         bool  = True
-    api_key:         str   = ""
-    api_secret:      str   = ""
-    exchange:        str   = "binance"
-    w_rsi:           float = 0.25
-    w_macd:          float = 0.25
-    w_bollinger:     float = 0.25
-    w_ema:           float = 0.25
+    bot_id:              str
+    user_id:             str
+    strategy_id:         str
+    symbol:              str   = "BTC/USDT"
+    timeframe:           str   = "1h"
+    capital:             float = 1000.0
+    max_position:        float = 0.1
+    stop_loss_pct:       float = 2.0
+    take_profit_pct:     float = 4.0
+    min_signal:          float = 0.05
+    dry_run:             bool  = True
+    api_key:             str   = ""
+    api_secret:          str   = ""
+    exchange:            str   = "binance"
+    w_rsi:               float = 0.25
+    w_macd:              float = 0.25
+    w_bollinger:         float = 0.25
+    w_ema:               float = 0.25
+    use_flow_filter:     bool  = True
+    min_buy_pressure:    float = 0.52
+    max_spread_pct:      float = 0.05
+    use_quant_filter:    bool  = True
+    min_quant_score:     float = -0.2
 
 class TechnicalRequest(BaseModel):
     closes:  List[float]
@@ -87,11 +96,13 @@ class TechnicalRequest(BaseModel):
     volumes: Optional[List[float]] = None
     symbol:  Optional[str] = "BTC/USDT"
 
-class OptimizeRequest(BaseModel):
-    symbols:           List[str]
-    user_risk_profile: str = "moderado"
-    generations:       int = 20
-    population_size:   int = 10
+class QuantRequest(BaseModel):
+    closes:      List[float]
+    btc_closes:  Optional[List[float]] = None
+    symbol:      Optional[str] = "BTC/USDT"
+
+class CorrelationRequest(BaseModel):
+    assets: Dict[str, List[float]]
 
 class BacktestRequest(BaseModel):
     strategy_config: dict
@@ -106,105 +117,214 @@ class BacktestRequest(BaseModel):
 def status():
     return {
         "status":      "GA Engine OK",
-        "version":     "5.0.0",
+        "version":     "6.0.0",
         "timestamp":   int(time.time()),
-        "features":    ["ga_population", "trading_bot", "technical_analysis", "real_market_data", "backtesting"],
+        "features":    ["ga_population", "trading_bot", "technical_analysis", "quantitative_analysis", "flow_filter", "real_market_data"],
         "active_bots": len(active_bots),
         "ga_jobs":     len(ga_jobs),
     }
+
+
+# ─── ANÁLISE QUANTITATIVA ───────────────────────────────────
+
+@app.get("/analyze/quantitative")
+async def analyze_quantitative_live(
+    symbol:     str = Query("BTC/USDT"),
+    timeframe:  str = Query("1h"),
+    limit:      int = Query(500),
+    btc_symbol: str = Query("BTC/USDT"),
+    exchange:   str = Query("binance"),
+):
+    """Análise quantitativa completa com dados reais"""
+    try:
+        ohlcv = get_ohlcv(symbol, timeframe, limit, exchange, BINANCE_KEY, BINANCE_SECRET)
+        closes = ohlcv["closes"]
+
+        btc_closes = None
+        if symbol != btc_symbol:
+            btc_ohlcv  = get_ohlcv(btc_symbol, timeframe, limit, exchange, BINANCE_KEY, BINANCE_SECRET)
+            btc_closes = btc_ohlcv["closes"]
+
+        result = quantitative_score(closes, btc_closes)
+        return {
+            "symbol":       symbol,
+            "timeframe":    timeframe,
+            "candles":      len(closes),
+            "latest_price": closes[-1],
+            "quantitative": result,
+            "timestamp":    int(time.time()),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/analyze/quantitative")
+async def analyze_quantitative_post(req: QuantRequest):
+    """Análise quantitativa com dados fornecidos"""
+    if len(req.closes) < 30:
+        raise HTTPException(status_code=400, detail="Mínimo 30 candles")
+    try:
+        result = quantitative_score(req.closes, req.btc_closes)
+        return {"symbol": req.symbol, "quantitative": result, "timestamp": int(time.time())}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/analyze/volatility")
+async def analyze_volatility(
+    symbol:    str = Query("BTC/USDT"),
+    timeframe: str = Query("1h"),
+    limit:     int = Query(200),
+    exchange:  str = Query("binance"),
+):
+    """Análise de volatilidade histórica e regime de mercado"""
+    try:
+        ohlcv  = get_ohlcv(symbol, timeframe, limit, exchange, BINANCE_KEY, BINANCE_SECRET)
+        vol    = historical_volatility(ohlcv["closes"])
+        zs     = price_zscore(ohlcv["closes"])
+        mom    = momentum(ohlcv["closes"])
+        sr     = sharpe_rolling(ohlcv["closes"])
+        return {
+            "symbol":      symbol,
+            "price":       ohlcv["closes"][-1],
+            "volatility":  vol,
+            "zscore":      zs,
+            "momentum":    mom,
+            "sharpe":      sr,
+            "timestamp":   int(time.time()),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/analyze/correlation")
+async def analyze_correlation(req: CorrelationRequest):
+    """Matriz de correlação entre múltiplos ativos"""
+    try:
+        result = correlation_matrix(req.assets)
+        return {"correlation": result, "timestamp": int(time.time())}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/analyze/correlation/live")
+async def analyze_correlation_live(
+    symbols:   str = Query("BTC/USDT,ETH/USDT,SOL/USDT"),
+    timeframe: str = Query("1h"),
+    limit:     int = Query(200),
+    exchange:  str = Query("binance"),
+):
+    """Correlação entre ativos com dados reais"""
+    try:
+        symbol_list = [s.strip() for s in symbols.split(",")]
+        assets = {}
+        for sym in symbol_list:
+            ohlcv = get_ohlcv(sym, timeframe, limit, exchange, BINANCE_KEY, BINANCE_SECRET)
+            name  = sym.replace("/USDT", "").replace("/BTC", "")
+            assets[name] = ohlcv["closes"]
+        result = correlation_matrix(assets)
+        return {"symbols": symbol_list, "correlation": result, "timestamp": int(time.time())}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/analyze/full")
+async def analyze_full(
+    symbol:    str = Query("BTC/USDT"),
+    timeframe: str = Query("1h"),
+    limit:     int = Query(200),
+    exchange:  str = Query("binance"),
+):
+    """
+    Análise completa: técnica + quantitativa + fluxo.
+    Endpoint principal para o dashboard.
+    """
+    try:
+        ohlcv   = get_ohlcv(symbol, timeframe, limit, exchange, BINANCE_KEY, BINANCE_SECRET)
+        closes  = ohlcv["closes"]
+        ticker  = get_ticker(symbol, exchange)
+        ob      = get_order_book(symbol, 20, exchange)
+
+        # Análise técnica
+        tech = generate_technical_signals(closes, ohlcv["highs"], ohlcv["lows"], ohlcv["volumes"])
+
+        # Análise quantitativa
+        btc_closes = None
+        if symbol != "BTC/USDT":
+            btc_ohlcv  = get_ohlcv("BTC/USDT", timeframe, limit, exchange, BINANCE_KEY, BINANCE_SECRET)
+            btc_closes = btc_ohlcv["closes"]
+        quant = quantitative_score(closes, btc_closes)
+
+        # Fluxo
+        flow = {
+            "buy_pressure":  ob.get("buy_pressure", 0.5),
+            "sell_pressure": ob.get("sell_pressure", 0.5),
+            "spread_pct":    ob.get("spread_pct", 0),
+            "change_24h":    ticker.get("change_24h", 0),
+        }
+        flow_score = (flow["buy_pressure"] - 0.5) * 4
+        flow["flow_score"] = round(float(np.clip(flow_score, -1, 1)), 4)
+
+        # Score combinado das 3 análises
+        combined = (
+            0.40 * (tech.get("signal", 0) if isinstance(tech.get("signal"), float) else
+                    (1 if tech.get("direction") == "BUY" else -1 if tech.get("direction") == "SELL" else 0) * tech.get("confidence", 0)) +
+            0.35 * quant["score"] +
+            0.25 * flow["flow_score"]
+        )
+        combined = float(np.clip(combined, -1, 1))
+
+        return {
+            "symbol":    symbol,
+            "timeframe": timeframe,
+            "price":     closes[-1],
+            "technical": tech,
+            "quantitative": quant,
+            "flow":      flow,
+            "combined_score":     round(combined, 4),
+            "combined_direction": "BUY" if combined > 0.1 else "SELL" if combined < -0.1 else "HOLD",
+            "timestamp": int(time.time()),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ─── GA POPULATION ──────────────────────────────────────────
 
 @app.post("/ga/evolve")
 async def ga_evolve(req: GAPopulationRequest, background_tasks: BackgroundTasks):
-    """
-    Inicia evolução GA com população de 10 robôs competindo.
-    Roda em background — use /ga/result/{job_id} para buscar o resultado.
-    """
     job_id = req.job_id or f"ga_{int(time.time())}"
-
     if job_id in ga_jobs and ga_jobs[job_id].get("status") == "running":
-        raise HTTPException(status_code=400, detail="Job já está rodando")
-
-    ga_jobs[job_id] = {
-        "job_id":    job_id,
-        "status":    "running",
-        "started_at": int(time.time()),
-        "symbol":    req.symbol,
-        "timeframe": req.timeframe,
-        "result":    None,
-        "error":     None,
-    }
-
+        raise HTTPException(status_code=400, detail="Job já rodando")
+    ga_jobs[job_id] = {"job_id": job_id, "status": "running", "started_at": int(time.time()), "symbol": req.symbol, "result": None, "error": None}
     def run_ga():
         try:
-            ga = GAPopulation(
-                population_size = req.population_size,
-                generations     = req.generations,
-                symbol          = req.symbol,
-                timeframe       = req.timeframe,
-                data_limit      = req.data_limit,
-                exchange        = req.exchange,
-                api_key         = BINANCE_KEY,
-                api_secret      = BINANCE_SECRET,
-            )
+            ga = GAPopulation(population_size=req.population_size, generations=req.generations, symbol=req.symbol, timeframe=req.timeframe, data_limit=req.data_limit, exchange=req.exchange, api_key=BINANCE_KEY, api_secret=BINANCE_SECRET)
             result = ga.run()
             ga_jobs[job_id]["status"] = "completed"
             ga_jobs[job_id]["result"] = result
             ga_jobs[job_id]["completed_at"] = int(time.time())
-            logger.info(f"GA job {job_id} concluído | fitness={result['best_fitness']}")
         except Exception as e:
             ga_jobs[job_id]["status"] = "error"
             ga_jobs[job_id]["error"]  = str(e)
-            logger.error(f"GA job {job_id} falhou: {e}")
-
     background_tasks.add_task(run_ga)
-
-    return {
-        "job_id":    job_id,
-        "status":    "running",
-        "message":   f"GA iniciado: {req.population_size} robôs × {req.generations} gerações",
-        "symbol":    req.symbol,
-        "timeframe": req.timeframe,
-        "check_at":  f"/ga/result/{job_id}",
-    }
-
+    return {"job_id": job_id, "status": "running", "check_at": f"/ga/result/{job_id}"}
 
 @app.post("/ga/evolve/sync")
 async def ga_evolve_sync(req: GAPopulationRequest):
-    """
-    Evolução GA síncrona — aguarda o resultado (use para gerações pequenas).
-    Recomendado: population=10, generations=5 para teste rápido.
-    """
     try:
-        ga = GAPopulation(
-            population_size = req.population_size,
-            generations     = req.generations,
-            symbol          = req.symbol,
-            timeframe       = req.timeframe,
-            data_limit      = req.data_limit,
-            exchange        = req.exchange,
-            api_key         = BINANCE_KEY,
-            api_secret      = BINANCE_SECRET,
-        )
-        result = ga.run()
-        return result
+        ga = GAPopulation(population_size=req.population_size, generations=req.generations, symbol=req.symbol, timeframe=req.timeframe, data_limit=req.data_limit, exchange=req.exchange, api_key=BINANCE_KEY, api_secret=BINANCE_SECRET)
+        return ga.run()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.get("/ga/result/{job_id}")
 async def ga_result(job_id: str):
-    """Verifica resultado de um job GA em background"""
-    if job_id not in ga_jobs:
-        raise HTTPException(status_code=404, detail="Job não encontrado")
+    if job_id not in ga_jobs: raise HTTPException(status_code=404, detail="Job não encontrado")
     return ga_jobs[job_id]
-
 
 @app.get("/ga/jobs")
 async def ga_jobs_list():
-    """Lista todos os jobs GA"""
     return {"jobs": list(ga_jobs.values()), "count": len(ga_jobs)}
 
 
@@ -212,8 +332,7 @@ async def ga_jobs_list():
 
 @app.post("/bot/start")
 async def bot_start(req: BotStartRequest):
-    if req.bot_id in active_bots:
-        raise HTTPException(status_code=400, detail="Bot já está rodando")
+    if req.bot_id in active_bots: raise HTTPException(status_code=400, detail="Bot já rodando")
     config = BotConfig(
         bot_id=req.bot_id, user_id=req.user_id, strategy_id=req.strategy_id,
         symbol=req.symbol, timeframe=req.timeframe, capital=req.capital,
@@ -222,6 +341,8 @@ async def bot_start(req: BotStartRequest):
         dry_run=req.dry_run, api_key=req.api_key or BINANCE_KEY,
         api_secret=req.api_secret or BINANCE_SECRET, exchange=req.exchange,
         w_rsi=req.w_rsi, w_macd=req.w_macd, w_bollinger=req.w_bollinger, w_ema=req.w_ema,
+        use_flow_filter=req.use_flow_filter, min_buy_pressure=req.min_buy_pressure,
+        max_spread_pct=req.max_spread_pct,
     )
     bot = TradingBot(config)
     active_bots[req.bot_id] = bot
@@ -230,8 +351,7 @@ async def bot_start(req: BotStartRequest):
 
 @app.post("/bot/stop/{bot_id}")
 async def bot_stop(bot_id: str):
-    if bot_id not in active_bots:
-        raise HTTPException(status_code=404, detail="Bot não encontrado")
+    if bot_id not in active_bots: raise HTTPException(status_code=404, detail="Bot não encontrado")
     bot = active_bots[bot_id]
     await bot.stop()
     del active_bots[bot_id]
@@ -239,8 +359,7 @@ async def bot_stop(bot_id: str):
 
 @app.get("/bot/status/{bot_id}")
 async def bot_status(bot_id: str):
-    if bot_id not in active_bots:
-        raise HTTPException(status_code=404, detail="Bot não encontrado")
+    if bot_id not in active_bots: raise HTTPException(status_code=404, detail="Bot não encontrado")
     return active_bots[bot_id].get_status()
 
 @app.get("/bot/list")
@@ -249,8 +368,7 @@ async def bot_list():
 
 @app.post("/bot/tick/{bot_id}")
 async def bot_tick(bot_id: str):
-    if bot_id not in active_bots:
-        raise HTTPException(status_code=404, detail="Bot não encontrado")
+    if bot_id not in active_bots: raise HTTPException(status_code=404, detail="Bot não encontrado")
     await active_bots[bot_id]._tick()
     return active_bots[bot_id].get_status()
 
@@ -339,11 +457,11 @@ async def backtest(req: BacktestRequest):
         capital *= (1 + r); equity.append(round(capital, 2))
     wins = sum(1 for r in returns if r > 0)
     return {
-        "total_return":   round(((equity[-1] - req.initial_capital) / req.initial_capital) * 100, 2),
-        "sharpe_ratio":   round(calculate_sharpe_ratio(returns.tolist()), 4),
-        "sortino_ratio":  round(calculate_sortino_ratio(returns.tolist()), 4),
-        "max_drawdown":   round(calculate_max_drawdown(returns.tolist()) * 100, 2),
-        "num_trades":     int(n), "win_rate": round(wins / n * 100, 2),
-        "profit_factor":  round(sum(r for r in returns if r > 0) / abs(sum(r for r in returns if r < 0)), 2),
-        "equity_curve":   equity, "initial_capital": req.initial_capital, "final_capital": round(equity[-1], 2),
+        "total_return":  round(((equity[-1] - req.initial_capital) / req.initial_capital) * 100, 2),
+        "sharpe_ratio":  round(calculate_sharpe_ratio(returns.tolist()), 4),
+        "sortino_ratio": round(calculate_sortino_ratio(returns.tolist()), 4),
+        "max_drawdown":  round(calculate_max_drawdown(returns.tolist()) * 100, 2),
+        "num_trades":    int(n), "win_rate": round(wins / n * 100, 2),
+        "profit_factor": round(sum(r for r in returns if r > 0) / abs(sum(r for r in returns if r < 0)), 2),
+        "equity_curve":  equity, "initial_capital": req.initial_capital, "final_capital": round(equity[-1], 2),
     }
