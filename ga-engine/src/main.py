@@ -70,7 +70,7 @@ class BotStartRequest(BaseModel):
     max_position:    float = 0.1
     stop_loss_pct:   float = 2.0
     take_profit_pct: float = 4.0
-    min_confidence:  float = 0.5
+    min_signal:      float = 0.05
     dry_run:         bool  = True
     api_key:         str   = ""
     api_secret:      str   = ""
@@ -218,7 +218,7 @@ async def bot_start(req: BotStartRequest):
         bot_id=req.bot_id, user_id=req.user_id, strategy_id=req.strategy_id,
         symbol=req.symbol, timeframe=req.timeframe, capital=req.capital,
         max_position=req.max_position, stop_loss_pct=req.stop_loss_pct,
-        take_profit_pct=req.take_profit_pct, min_confidence=req.min_confidence,
+        take_profit_pct=req.take_profit_pct, min_signal=req.min_signal,
         dry_run=req.dry_run, api_key=req.api_key or BINANCE_KEY,
         api_secret=req.api_secret or BINANCE_SECRET, exchange=req.exchange,
         w_rsi=req.w_rsi, w_macd=req.w_macd, w_bollinger=req.w_bollinger, w_ema=req.w_ema,

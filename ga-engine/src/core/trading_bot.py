@@ -1,6 +1,7 @@
 """
-FinanMap Cripto - Trading Bot Core
-Robô autônomo que combina análise técnica + GA para executar trades
+FinanMap Cripto - Trading Bot Core v2
+Robô autônomo com análise técnica (GA) + filtro de fluxo em tempo real
+Fluxo: order book pressure, volume spike, spread analysis
 """
 
 import asyncio
@@ -18,51 +19,73 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class BotConfig:
-    """Configuração de um robô de trading"""
-    bot_id:          str
-    user_id:         str
-    strategy_id:     str
-    symbol:          str          = "BTC/USDT"
-    timeframe:       str          = "1h"
-    capital:         float        = 1000.0
-    max_position:    float        = 0.1          # % máximo do capital por trade
-    stop_loss_pct:   float        = 2.0          # % de stop loss
-    take_profit_pct: float        = 4.0          # % de take profit
-    min_confidence:  float        = 0.5          # confiança mínima para entrar
-    dry_run:         bool         = True          # True = simulado, False = real
-    api_key:         str          = ""
-    api_secret:      str          = ""
-    exchange:        str          = "binance"
+    bot_id:           str
+    user_id:          str
+    strategy_id:      str
+    symbol:           str   = "BTC/USDT"
+    timeframe:        str   = "1h"
+    capital:          float = 1000.0
+    max_position:     float = 0.1
+    stop_loss_pct:    float = 2.0
+    take_profit_pct:  float = 4.0
+    min_signal:       float = 0.05     # limiar técnico mínimo
+    dry_run:          bool  = True
+    api_key:          str   = ""
+    api_secret:       str   = ""
+    exchange:         str   = "binance"
 
-    # Pesos dos sinais técnicos (evoluídos pelo GA)
-    w_rsi:       float = 0.30
-    w_macd:      float = 0.30
-    w_bollinger: float = 0.20
-    w_ema:       float = 0.20
+    # Pesos técnicos (evoluídos pelo GA)
+    w_rsi:        float = 0.30
+    w_macd:       float = 0.30
+    w_bollinger:  float = 0.20
+    w_ema:        float = 0.20
+
+    # Filtros de fluxo em tempo real
+    use_flow_filter:      bool  = True
+    min_buy_pressure:     float = 0.52   # mínimo de pressão compradora para comprar
+    max_spread_pct:       float = 0.05   # spread máximo tolerado (%)
+    min_volume_ratio:     float = 0.8    # volume mínimo vs média (evita mercado morto)
+    flow_confirmation:    bool  = True   # exige confirmação do fluxo para abrir
+
+
+@dataclass
+class FlowData:
+    """Dados de fluxo em tempo real"""
+    buy_pressure:  float = 0.5
+    sell_pressure: float = 0.5
+    spread_pct:    float = 0.01
+    bid_volume:    float = 0.0
+    ask_volume:    float = 0.0
+    price:         float = 0.0
+    volume_24h:    float = 0.0
+    change_24h:    float = 0.0
+    flow_score:    float = 0.0    # score consolidado de fluxo (-1 a +1)
+    flow_ok:       bool  = True   # fluxo aprovado para trade
 
 
 @dataclass
 class BotState:
-    """Estado atual do robô"""
-    is_running:       bool  = False
-    position:         str   = "none"   # none | long | short
-    entry_price:      float = 0.0
-    position_size:    float = 0.0
-    unrealized_pnl:   float = 0.0
-    total_trades:     int   = 0
-    winning_trades:   int   = 0
-    total_pnl:        float = 0.0
-    last_signal:      str   = "HOLD"
-    last_confidence:  float = 0.0
-    last_check:       float = 0.0
-    errors:           int   = 0
-    log:              list  = field(default_factory=list)
+    is_running:      bool  = False
+    position:        str   = "none"
+    entry_price:     float = 0.0
+    position_size:   float = 0.0
+    unrealized_pnl:  float = 0.0
+    total_trades:    int   = 0
+    winning_trades:  int   = 0
+    total_pnl:       float = 0.0
+    last_signal:     str   = "HOLD"
+    last_score:      float = 0.0
+    last_flow:       Optional[FlowData] = None
+    last_check:      float = 0.0
+    errors:          int   = 0
+    log:             list  = field(default_factory=list)
 
 
 class TradingBot:
     """
-    Robô de trading autônomo.
-    Ciclo: Coleta dados → Análise técnica → Gera sinal → Valida risco → Executa ordem
+    Robô de trading com duas camadas de análise:
+    1. Análise técnica (pesos evoluídos pelo GA) — gera o sinal
+    2. Análise de fluxo em tempo real — confirma ou bloqueia o sinal
     """
 
     def __init__(self, config: BotConfig):
@@ -79,21 +102,22 @@ class TradingBot:
     def _log(self, msg: str, level: str = "INFO"):
         entry = {"ts": int(time.time()), "level": level, "msg": msg}
         self.state.log.append(entry)
-        if len(self.state.log) > 100:
-            self.state.log = self.state.log[-100:]
+        if len(self.state.log) > 200:
+            self.state.log = self.state.log[-200:]
         getattr(logger, level.lower(), logger.info)(f"[BOT {self.config.bot_id[:8]}] {msg}")
 
     async def start(self):
-        """Inicia o loop principal do robô"""
         if self.state.is_running:
             self._log("Robô já está rodando", "WARNING")
             return
         self.state.is_running = True
-        self._log(f"Robô iniciado — {self.config.symbol} {self.config.timeframe} | dry_run={self.config.dry_run}")
+        self._log(
+            f"Robô v2 iniciado | {self.config.symbol} {self.config.timeframe} | "
+            f"dry_run={self.config.dry_run} | flow_filter={self.config.use_flow_filter}"
+        )
         self._task = asyncio.create_task(self._loop())
 
     async def stop(self):
-        """Para o robô e fecha posições abertas"""
         self.state.is_running = False
         if self._task:
             self._task.cancel()
@@ -103,7 +127,6 @@ class TradingBot:
         self._log("Robô parado")
 
     async def _loop(self):
-        """Loop principal — roda a cada candle fechado"""
         timeframe_seconds = {
             "1m": 60, "5m": 300, "15m": 900,
             "1h": 3600, "4h": 14400, "1d": 86400,
@@ -121,15 +144,76 @@ class TradingBot:
                 self.state.errors += 1
                 self._log(f"Erro no tick: {e}", "ERROR")
                 if self.state.errors >= 5:
-                    self._log("Muitos erros consecutivos — parando robô", "ERROR")
+                    self._log("Muitos erros — parando robô", "ERROR")
                     self.state.is_running = False
                     break
+            await asyncio.sleep(min(interval, 60))
 
-            await asyncio.sleep(min(interval, 60))  # checa no máximo a cada 60s em dev
+    # ─── ANÁLISE DE FLUXO ───────────────────────────────────
+
+    def _analyze_flow(self, price: float) -> FlowData:
+        """
+        Analisa o fluxo em tempo real via order book e ticker.
+        Retorna FlowData com score e aprovação para trade.
+        """
+        flow = FlowData(price=price)
+
+        try:
+            # Order book — pressão compradora vs vendedora
+            ob = get_order_book(self.config.symbol, 20, self.config.exchange)
+            flow.buy_pressure  = ob.get("buy_pressure", 0.5)
+            flow.sell_pressure = ob.get("sell_pressure", 0.5)
+            flow.spread_pct    = ob.get("spread_pct", 0.01)
+            flow.bid_volume    = ob.get("bid_volume", 0)
+            flow.ask_volume    = ob.get("ask_volume", 0)
+
+            # Ticker — volume e variação 24h
+            ticker = get_ticker(self.config.symbol, self.config.exchange)
+            flow.volume_24h = ticker.get("volume_24h", 0)
+            flow.change_24h = ticker.get("change_24h", 0)
+
+            # Score de fluxo (-1 a +1)
+            # Pressão: >0.5 = compradores dominam = bullish
+            pressure_score = (flow.buy_pressure - 0.5) * 4   # normaliza para -2 a +2, clamp -1 a +1
+            pressure_score = max(-1.0, min(1.0, pressure_score))
+
+            # Momentum de preço: variação 24h normalizada
+            momentum_score = max(-1.0, min(1.0, flow.change_24h / 10))
+
+            # Score final ponderado
+            flow.flow_score = round(pressure_score * 0.7 + momentum_score * 0.3, 4)
+
+            # Aprovação — verifica cada filtro
+            spread_ok  = flow.spread_pct <= self.config.max_spread_pct
+            pressure_ok = flow.buy_pressure >= self.config.min_buy_pressure
+
+            flow.flow_ok = spread_ok and pressure_ok
+
+            self._log(
+                f"Fluxo | Pressure: {flow.buy_pressure:.1%} buy / {flow.sell_pressure:.1%} sell | "
+                f"Spread: {flow.spread_pct:.4f}% | Score: {flow.flow_score:+.3f} | "
+                f"OK: {flow.flow_ok}"
+            )
+
+        except Exception as e:
+            self._log(f"Erro análise de fluxo: {e} — usando neutro", "WARNING")
+            flow.flow_ok    = True   # fallback: não bloqueia por erro de fluxo
+            flow.flow_score = 0.0
+
+        self.state.last_flow = flow
+        return flow
+
+    # ─── TICK PRINCIPAL ─────────────────────────────────────
 
     async def _tick(self):
-        """Um ciclo completo do robô"""
-        # 1. Coleta dados
+        """
+        Ciclo principal:
+        1. Análise técnica (GA) → score técnico
+        2. Análise de fluxo → confirmação em tempo real
+        3. Decisão: só opera se AMBOS aprovarem
+        """
+
+        # 1. Dados OHLCV para análise técnica
         ohlcv = get_ohlcv(
             symbol        = self.config.symbol,
             timeframe     = self.config.timeframe,
@@ -139,37 +223,45 @@ class TradingBot:
             secret        = self.config.api_secret,
         )
 
-        ticker   = get_ticker(self.config.symbol, self.config.exchange)
-        ob       = get_order_book(self.config.symbol, 20, self.config.exchange)
-        price    = ticker["price"]
+        ticker = get_ticker(self.config.symbol, self.config.exchange)
+        price  = ticker["price"]
 
-        # 2. Análise técnica
-        signals = generate_technical_signals(
+        # 2. Análise técnica com pesos do GA
+        signals   = generate_technical_signals(
             closes  = ohlcv["closes"],
             highs   = ohlcv["highs"],
             lows    = ohlcv["lows"],
             volumes = ohlcv["volumes"],
         )
+        breakdown  = signals.get("breakdown", {})
+        rsi_s  = breakdown.get("rsi",       {}).get("score", 0) or 0
+        macd_s = breakdown.get("macd",      {}).get("score", 0) or 0
+        bb_s   = breakdown.get("bollinger", {}).get("score", 0) or 0
+        ema_s  = breakdown.get("ema_trend", {}).get("score", 0) or 0
 
-        signal     = signals["direction"]    # BUY | SELL | HOLD
-        confidence = signals["confidence"]   # 0-1
-        score      = signals["signal"]       # -1 a +1
+        tech_score = (
+            self.config.w_rsi       * rsi_s  +
+            self.config.w_macd      * macd_s +
+            self.config.w_bollinger * bb_s   +
+            self.config.w_ema       * ema_s
+        )
 
-        # 3. Ajuste pelo order book (fluxo)
-        buy_pressure = ob.get("buy_pressure", 0.5)
-        if buy_pressure > 0.6 and score > 0:
-            confidence = min(confidence * 1.1, 1.0)
-        elif buy_pressure < 0.4 and score < 0:
-            confidence = min(confidence * 1.1, 1.0)
+        tech_direction = "BUY" if tech_score > self.config.min_signal else \
+                         "SELL" if tech_score < -self.config.min_signal else "HOLD"
 
-        self.state.last_signal     = signal
-        self.state.last_confidence = confidence
+        self.state.last_signal = tech_direction
+        self.state.last_score  = round(tech_score, 4)
 
         self._log(
-            f"Tick | Preço: ${price:,.2f} | Sinal: {signal} | "
-            f"Confiança: {confidence:.1%} | Score: {score:.4f} | "
-            f"Buy pressure: {buy_pressure:.1%}"
+            f"Tick | Preço: ${price:,.2f} | "
+            f"Técnico: {tech_direction} ({tech_score:+.4f}) | "
+            f"RSI={rsi_s:+.3f} MACD={macd_s:+.3f} BB={bb_s:+.3f} EMA={ema_s:+.3f}"
         )
+
+        # 3. Análise de fluxo em tempo real (só se configurado)
+        flow = None
+        if self.config.use_flow_filter:
+            flow = self._analyze_flow(price)
 
         # 4. Atualiza PnL não realizado
         if self.state.position == "long" and self.state.entry_price > 0:
@@ -177,36 +269,46 @@ class TradingBot:
                 (price - self.state.entry_price) / self.state.entry_price * 100
             )
 
-        # 5. Verifica stop loss e take profit
+        # 5. Stop loss e take profit (independente do fluxo)
         if self.state.position == "long":
             if self.state.unrealized_pnl <= -self.config.stop_loss_pct:
-                self._log(f"STOP LOSS atingido: {self.state.unrealized_pnl:.2f}%", "WARNING")
+                self._log(f"STOP LOSS | PnL: {self.state.unrealized_pnl:.2f}%", "WARNING")
                 await self._close_position("STOP_LOSS", price)
                 return
-
             if self.state.unrealized_pnl >= self.config.take_profit_pct:
-                self._log(f"TAKE PROFIT atingido: {self.state.unrealized_pnl:.2f}%")
+                self._log(f"TAKE PROFIT | PnL: {self.state.unrealized_pnl:.2f}%")
                 await self._close_position("TAKE_PROFIT", price)
                 return
 
-        # 6. Executa sinal
-        if confidence >= self.config.min_confidence:
-            if signal == "BUY" and self.state.position == "none":
-                await self._open_position("long", price, signals)
+        # 6. Decisão de entrada — técnica + fluxo
+        if tech_direction == "BUY" and self.state.position == "none":
+            flow_approved = True
+            if self.config.use_flow_filter and self.config.flow_confirmation and flow:
+                flow_approved = flow.flow_ok
+                if not flow_approved:
+                    self._log(
+                        f"Sinal BUY bloqueado pelo fluxo | "
+                        f"Pressure: {flow.buy_pressure:.1%} < {self.config.min_buy_pressure:.1%} "
+                        f"ou spread alto: {flow.spread_pct:.4f}%",
+                        "WARNING"
+                    )
 
-            elif signal == "SELL" and self.state.position == "long":
-                await self._close_position("SIGNAL_SELL", price)
+            if flow_approved:
+                self._log(f"Sinal BUY confirmado! Técnico={tech_score:+.4f} Fluxo={flow.flow_score:+.3f if flow else 'N/A'}")
+                await self._open_position("long", price)
 
-    async def _open_position(self, side: str, price: float, signals: dict):
-        """Abre uma posição"""
+        # 7. Saída por sinal técnico de venda
+        elif tech_direction == "SELL" and self.state.position == "long":
+            self._log(f"Sinal SELL técnico | Score: {tech_score:+.4f}")
+            await self._close_position("SIGNAL_SELL", price)
+
+    # ─── EXECUÇÃO DE ORDENS ─────────────────────────────────
+
+    async def _open_position(self, side: str, price: float):
         size_usd = self.config.capital * self.config.max_position
         quantity = round(size_usd / price, 6)
 
-        self._log(
-            f"ABRINDO {side.upper()} | "
-            f"Preço: ${price:,.2f} | Qtd: {quantity} | "
-            f"Valor: ${size_usd:.2f}"
-        )
+        self._log(f"ABRINDO {side.upper()} | ${price:,.2f} | Qtd: {quantity} | ${size_usd:.2f}")
 
         result = await self.executor.place_order(
             symbol   = self.config.symbol,
@@ -220,19 +322,13 @@ class TradingBot:
             self.state.entry_price   = result.executed_price or price
             self.state.position_size = quantity
             self.state.total_trades += 1
-            self._log(
-                f"Posição aberta! Preço exec: ${self.state.entry_price:,.2f} | "
-                f"ID: {result.order_id}"
-            )
+            self._log(f"Posição aberta | Exec: ${self.state.entry_price:,.2f} | ID: {result.order_id}")
         else:
-            self._log(f"Falha ao abrir posição: {result.error}", "ERROR")
+            self._log(f"Falha ao abrir: {result.error}", "ERROR")
 
     async def _close_position(self, reason: str, price: Optional[float] = None):
-        """Fecha a posição atual"""
         if self.state.position == "none":
             return
-
-        self._log(f"FECHANDO posição | Motivo: {reason} | Preço: ${price or 0:,.2f}")
 
         result = await self.executor.place_order(
             symbol   = self.config.symbol,
@@ -251,8 +347,8 @@ class TradingBot:
                 self.state.winning_trades += 1
 
             self._log(
-                f"Posição fechada | PnL: {pnl_pct:+.2f}% (${pnl_usd:+.2f}) | "
-                f"Motivo: {reason}"
+                f"Posição fechada | Motivo: {reason} | "
+                f"PnL: {pnl_pct:+.2f}% (${pnl_usd:+.2f})"
             )
 
             self.state.position       = "none"
@@ -260,14 +356,16 @@ class TradingBot:
             self.state.position_size  = 0.0
             self.state.unrealized_pnl = 0.0
         else:
-            self._log(f"Falha ao fechar posição: {result.error}", "ERROR")
+            self._log(f"Falha ao fechar: {result.error}", "ERROR")
+
+    # ─── STATUS ─────────────────────────────────────────────
 
     def get_status(self) -> dict:
-        """Retorna status completo do robô"""
         win_rate = (
             self.state.winning_trades / self.state.total_trades * 100
             if self.state.total_trades > 0 else 0
         )
+        flow = self.state.last_flow
         return {
             "bot_id":          self.config.bot_id,
             "strategy_id":     self.config.strategy_id,
@@ -275,6 +373,7 @@ class TradingBot:
             "timeframe":       self.config.timeframe,
             "is_running":      self.state.is_running,
             "dry_run":         self.config.dry_run,
+            "use_flow_filter": self.config.use_flow_filter,
             "position":        self.state.position,
             "entry_price":     self.state.entry_price,
             "position_size":   self.state.position_size,
@@ -284,8 +383,26 @@ class TradingBot:
             "win_rate":        round(win_rate, 2),
             "total_pnl":       round(self.state.total_pnl, 4),
             "last_signal":     self.state.last_signal,
-            "last_confidence": round(self.state.last_confidence, 4),
+            "last_score":      self.state.last_score,
+            "last_flow": {
+                "buy_pressure":  round(flow.buy_pressure, 4),
+                "sell_pressure": round(flow.sell_pressure, 4),
+                "spread_pct":    round(flow.spread_pct, 4),
+                "flow_score":    round(flow.flow_score, 4),
+                "flow_ok":       flow.flow_ok,
+                "change_24h":    round(flow.change_24h, 2),
+            } if flow else None,
             "last_check":      self.state.last_check,
             "errors":          self.state.errors,
             "log":             self.state.log[-20:],
+            "config": {
+                "w_rsi":             self.config.w_rsi,
+                "w_macd":            self.config.w_macd,
+                "w_bollinger":       self.config.w_bollinger,
+                "w_ema":             self.config.w_ema,
+                "min_buy_pressure":  self.config.min_buy_pressure,
+                "max_spread_pct":    self.config.max_spread_pct,
+                "stop_loss_pct":     self.config.stop_loss_pct,
+                "take_profit_pct":   self.config.take_profit_pct,
+            }
         }
