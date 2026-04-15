@@ -63,7 +63,7 @@ export default function DashboardPage() {
         fetchWithTimeout(`${API}/api/ga/analyze/fast?symbol=${symbol}&timeframe=1h&limit=100`, { headers }),
         fetchWithTimeout(`${API}/api/ga/strategies`, { headers }),
         fetchWithTimeout(`${API}/api/trades/summary`, { headers }),
-        fetchWithTimeout(`${API}/api/ga/portfolio/binance`, { headers }),
+        fetchWithTimeout(`${API}/api/ga/portfolio/binance`, { headers }, 15000),
       ])
 
       if (analRes.status  === 'fulfilled' && analRes.value.ok)  setAnalysis(await analRes.value.json())

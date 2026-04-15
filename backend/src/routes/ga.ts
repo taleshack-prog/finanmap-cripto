@@ -372,16 +372,28 @@ router.get('/analyze/full', authenticate, async (req: AuthRequest, res: Response
 router.get('/analyze/fast', authenticate, async (req: AuthRequest, res: Response) => {
   try {
     const { symbol = 'BTC/USDT', timeframe = '1h', limit = '100' } = req.query as any
-    const [techRes, quantRes] = await Promise.all([
+    const [techRes, quantRes, obRes] = await Promise.all([
       axios.get(`${GA_URL}/analyze/live?symbol=${symbol}&timeframe=${timeframe}&limit=${limit}`, { timeout: 15000 }),
       axios.get(`${GA_URL}/analyze/quantitative?symbol=${symbol}&timeframe=${timeframe}&limit=${limit}`, { timeout: 15000 }),
+      axios.get(`${GA_URL}/market/orderbook?symbol=${symbol}&limit=20`, { timeout: 8000 }).catch(() => ({ data: {} })),
     ])
+
+    const ob = obRes.data || {}
+    const buy_pressure = ob.buy_pressure ?? 0.5
+    const flow_score = parseFloat(((buy_pressure - 0.5) * 4).toFixed(4))
+
     res.json({
       symbol,
-      price: techRes.data.latest_price,
-      technical: techRes.data.analysis,
-      quantitative: quantRes.data.quantitative,
-      combined_score: (techRes.data.analysis?.signal || 0) * 0.6 + (quantRes.data.quantitative?.score || 0) * 0.4,
+      price:         techRes.data.latest_price,
+      technical:     techRes.data.analysis,
+      quantitative:  quantRes.data.quantitative,
+      flow: {
+        buy_pressure,
+        sell_pressure: ob.sell_pressure ?? 0.5,
+        spread_pct:    ob.spread_pct    ?? 0,
+        flow_score:    Math.max(-1, Math.min(1, flow_score)),
+      },
+      combined_score:     (techRes.data.analysis?.signal || 0) * 0.6 + (quantRes.data.quantitative?.score || 0) * 0.4,
       combined_direction: techRes.data.analysis?.direction || 'HOLD',
       timestamp: Date.now(),
     })
