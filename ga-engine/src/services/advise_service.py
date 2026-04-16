@@ -71,7 +71,7 @@ async def _get_btc_network_health() -> dict:
         return result
     except Exception as e:
         logger.warning(f"BTC network health: {e}")
-        return {"composite": 0.0, "error": str(e)}
+        return {"composite": None, "error": str(e)}
 
 
 async def _get_mempool_stress() -> dict:
@@ -109,7 +109,7 @@ async def _get_mempool_stress() -> dict:
         return result
     except Exception as e:
         logger.warning(f"Mempool stress: {e}")
-        return {"stress_score": 0.0, "error": str(e)}
+        return {"stress_score": None, "error": str(e)}
 
 
 async def _get_eth_gas_stress() -> dict:
@@ -146,7 +146,7 @@ async def _get_eth_gas_stress() -> dict:
         return result
     except Exception as e:
         logger.warning(f"ETH gas: {e}")
-        return {"gas_score": 0.0, "error": str(e)}
+        return {"gas_score": None, "error": str(e)}
 
 
 async def _get_funding_rate_stress(symbol: str = "BTC/USDT") -> dict:
@@ -191,7 +191,7 @@ async def _get_funding_rate_stress(symbol: str = "BTC/USDT") -> dict:
         return result
     except Exception as e:
         logger.warning(f"Funding rate {symbol}: {e}")
-        return {"funding_score": 0.0, "error": str(e)}
+        return {"funding_score": None, "error": str(e)}
 
 
 # ─── SCORE ADVISE CONSOLIDADO ───────────────────────────────
@@ -228,15 +228,21 @@ async def get_advise(symbol: str = "BTC", strategy_id: Optional[str] = None) -> 
 
     # Scores individuais
     scores = {
-        "network":  network.get("composite", 0.0),
-        "mempool":  mempool.get("stress_score", 0.0),
-        "funding":  funding.get("funding_score", 0.0),
+        "network":  network.get("composite") if network.get("composite") is not None else None,
+        "mempool":  mempool.get("stress_score") if mempool.get("stress_score") is not None else None,
+        "funding":  funding.get("funding_score") if funding.get("funding_score") is not None else None,
     }
     if base_sym == "ETH":
-        scores["eth_gas"] = eth_gas.get("gas_score", 0.0)
+        scores["eth_gas"] = eth_gas.get("gas_score")
+    # Remove scores None
+    scores = {k: v for k, v in scores.items() if v is not None}
 
-    # Score final normalizado para 0-1
-    raw_score  = np.mean(list(scores.values()))
+    # Score final — ignora métricas com erro (None)
+    valid_scores = [v for v in scores.values() if v is not None and np.isfinite(v)]
+    if not valid_scores:
+        raw_score = 0.0  # sem dados = neutro
+    else:
+        raw_score = np.mean(valid_scores)
     # Normaliza de [-1,1] para [0,1]
     norm_score = float((raw_score + 1) / 2)
     norm_score = max(0.0, min(1.0, norm_score))
