@@ -35,7 +35,7 @@ GENE_RANGES = {
     "w_ema":           (0.05, 0.40),   # peso EMA trend
     "stop_loss_pct":   (1.0,  5.0),    # stop loss %
     "take_profit_pct": (2.0,  10.0),   # take profit %
-    "capital_pct":     (0.05, 0.25),   # % capital por trade
+    "capital_pct":     (0.20, 0.30),   # % capital por trade
 }
 GENE_NAMES = list(GENE_RANGES.keys())
 
@@ -202,71 +202,52 @@ def _backtest_vectorized(chromosome: Chromosome, closes: np.ndarray) -> dict:
 # ─── FITNESS BARBELL (TA PURO) ──────────────────────────────
 
 def _compute_fitness_barbell(returns: list) -> dict:
-    """
-    Fitness antifrágil — Sharpe + Profit Factor + MDD cap.
-    Sem on-chain. Thresholds baseados em evidência:
-    - MDD cap: -15% (ruína improvável com stop adequado)
-    - Sharpe mín: 1.8 (QuantConnect GA benchmarks)
-    - Profit Factor mín: 1.2 (lucros > perdas)
-    """
     if len(returns) < 3:
         return {"fitness": -1.0, "disqualified": True, "reason": "poucos_trades"}
 
     arr = np.array(returns)
 
-    # Métricas base
     win_rate     = float(np.sum(arr > 0) / len(arr) * 100)
     total_return = float((np.prod(1 + arr) - 1) * 100)
     max_dd       = float(np.min(np.minimum.accumulate(1 + arr) - 1) * 100)
 
-    # Sharpe anualizado
-    mean_r = np.mean(arr)
-    std_r  = np.std(arr, ddof=1)
-    sharpe = float(mean_r / std_r * np.sqrt(8760)) if std_r > 0 else 0.0
+    mean_r = float(np.mean(arr))
+    std_r  = float(np.std(arr, ddof=1))
+    sharpe = float(mean_r / std_r * np.sqrt(8760)) if std_r > 1e-9 else 0.0
 
-    # Sortino (penaliza só downside)
-    down   = arr[arr < 0]
-    sortino = float(mean_r / np.std(down, ddof=1) * np.sqrt(8760)) if len(down) > 1 else 0.0
+    down    = arr[arr < 0]
+    std_d   = float(np.std(down, ddof=1)) if len(down) > 1 else 1e-9
+    sortino = float(mean_r / std_d * np.sqrt(8760)) if std_d > 1e-9 else 0.0
 
-    # Profit Factor = soma ganhos / soma perdas absolutas
-    gains  = arr[arr > 0].sum()
-    losses = abs(arr[arr < 0].sum())
-    pf     = float(gains / losses) if losses > 0 else gains * 10
+    gains  = float(arr[arr > 0].sum())
+    losses = float(abs(arr[arr < 0].sum()))
+    pf     = min(gains / losses, 5.0) if losses > 1e-9 else min(gains * 10, 5.0)
 
-    # ── DISQUALIFICAÇÃO POR RISCO ──
+    # Sanitiza — garante que nenhum valor é inf ou nan
+    sharpe  = 0.0 if not np.isfinite(sharpe)  else sharpe
+    sortino = 0.0 if not np.isfinite(sortino) else sortino
+    pf      = 5.0 if not np.isfinite(pf)      else pf
+
     if max_dd < MDD_CAP * 100:
-        return {
-            "fitness": -2.0, "disqualified": True,
-            "reason": f"mdd_excedido ({max_dd:.1f}% < {MDD_CAP*100:.0f}%)",
-            "sharpe": sharpe, "sortino": sortino, "profit_factor": pf,
-            "win_rate": win_rate, "max_dd": max_dd, "total_return": total_return,
-        }
+        return {"fitness": -2.0, "disqualified": True, "reason": f"mdd_excedido",
+                "sharpe": sharpe, "sortino": sortino, "profit_factor": pf,
+                "win_rate": win_rate, "max_dd": max_dd, "total_return": total_return}
 
-    if sharpe < SHARPE_MIN and len(returns) > 10:
-        # Penaliza mas não elimina (pode melhorar nas gerações)
-        penalty = (SHARPE_MIN - sharpe) * 0.5
-    else:
-        penalty = 0.0
+    penalty = max(0.0, (SHARPE_MIN - sharpe) * 0.5) if sharpe < SHARPE_MIN and len(returns) > 10 else 0.0
 
-    # ── FITNESS COMPOSTO ──
-    # Sharpe (40%) + Sortino (30%) + Profit Factor (20%) + Win Rate bônus (10%)
     fitness = (
-        0.40 * sharpe
-        + 0.30 * sortino
-        + 0.20 * min(pf, 5.0)          # cap em 5x para não explodir
-        + 0.10 * max(0, win_rate - 50) * 0.1
+        0.40 * sharpe + 0.30 * sortino +
+        0.20 * min(pf, 5.0) +
+        0.10 * max(0, win_rate - 50) * 0.1
         - penalty
     )
+    fitness = float(np.clip(fitness, -10.0, 100.0))
 
     return {
-        "fitness":       round(fitness, 4),
-        "disqualified":  False,
-        "sharpe":        round(sharpe, 4),
-        "sortino":       round(sortino, 4),
-        "profit_factor": round(pf, 4),
-        "win_rate":      round(win_rate, 1),
-        "max_dd":        round(max_dd, 2),
-        "total_return":  round(total_return, 2),
+        "fitness": round(fitness, 4), "disqualified": False,
+        "sharpe": round(sharpe, 4), "sortino": round(sortino, 4),
+        "profit_factor": round(pf, 4), "win_rate": round(win_rate, 1),
+        "max_dd": round(max_dd, 2), "total_return": round(total_return, 2),
     }
 
 

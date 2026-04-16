@@ -89,7 +89,7 @@ export default function EstrategiasPage() {
       const r = await fetch(`${API}/api/ga/strategies/${id}/activate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ capital: 1000, dry_run }),
+        body: JSON.stringify({ capital: 109, dry_run: false, max_position: 0.25 }),
       })
       const data = await r.json()
       if (!r.ok) throw new Error(data.error || 'Erro ao ativar')
