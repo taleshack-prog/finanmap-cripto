@@ -9,6 +9,7 @@ const NAV = [
   { href: '/dashboard/trades', label: 'TRADES', icon: '⇅' },
   { href: '/dashboard/fire', label: 'FIRE', icon: '◐' },
   { href: '/dashboard/backtests', label: 'BACKTESTS', icon: '↻' },
+  { href: '/dashboard/monitor', label: 'MONITOR', icon: '◉' },
 ]
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
