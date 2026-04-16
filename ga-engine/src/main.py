@@ -28,6 +28,7 @@ from src.services.portfolio_service import (
     get_binance_balances, get_prices_for_symbols, categorize
 )
 from src.services.advise_service import get_advise
+from src.services.bot_persistence import restore_active_bots
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -37,6 +38,11 @@ app = FastAPI(
     description="GA + Técnica + Fluxo + Quantitativa + On-Chain",
     version="7.0.0"
 )
+
+@app.on_event("startup")
+async def startup_event():
+    import asyncio
+    asyncio.create_task(restore_active_bots())
 
 app.add_middleware(
     CORSMiddleware,

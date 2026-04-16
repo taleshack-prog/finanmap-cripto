@@ -244,7 +244,20 @@ router.post('/strategies/:id/activate', authenticate, async (req: AuthRequest, r
       where: { id: e.id },
       data:  {
         ativa:     true,
-        cromossomo: { ...c, bot_id: botId, ativada_em: new Date().toISOString() },
+        cromossomo: { ...c, bot_id: botId, ativada_em: new Date().toISOString(),
+          bot_config: {
+            symbol:           c?.symbol || 'BTC/USDT',
+            timeframe:        c?.timeframe || '1h',
+            capital:          req.body.capital || 109,
+            max_position:     req.body.max_position || 0.25,
+            dry_run:          req.body.dry_run ?? false,
+            use_flow_filter:  true,
+            min_buy_pressure: 0.52,
+            max_spread_pct:   0.05,
+            min_signal:       0.05,
+            exchange:         'binance',
+          }
+        },
       },
     });
 
@@ -399,6 +412,47 @@ router.get('/analyze/fast', authenticate, async (req: AuthRequest, res: Response
     })
   } catch (e: any) {
     res.status(500).json({ error: e?.message })
+  }
+})
+
+// ─── GET /api/ga/strategies/active ─────────────────────────
+// Busca estratégias ativas para restaurar bots ao reiniciar GA Engine
+router.get('/strategies/active', async (_req, res: Response) => {
+  try {
+    const estrategias = await prisma.estrategia.findMany({
+      where: { ativa: true },
+    })
+    const enriched = estrategias.map(e => {
+      const c = e.cromossomo as any
+      return {
+        id:        e.id,
+        userId:    e.userId,
+        nome:      e.nome,
+        cromossomo: e.cromossomo,
+        ativa:     e.ativa,
+      }
+    })
+    res.json({ estrategias: enriched, total: enriched.length })
+  } catch {
+    res.status(500).json({ error: 'Erro ao buscar estratégias ativas' })
+  }
+})
+
+// ─── PATCH /api/ga/strategies/:id/bot-id ───────────────────
+// Atualiza bot_id após restauração automática
+router.patch('/strategies/:id/bot-id', async (req, res: Response) => {
+  try {
+    const { bot_id } = req.body
+    const e = await prisma.estrategia.findFirst({ where: { id: req.params.id } })
+    if (!e) return res.status(404).json({ error: 'Não encontrada' })
+    const c = e.cromossomo as any
+    await prisma.estrategia.update({
+      where: { id: e.id },
+      data:  { cromossomo: { ...c, bot_id, restaurado_em: new Date().toISOString() } },
+    })
+    res.json({ success: true, bot_id })
+  } catch {
+    res.status(500).json({ error: 'Erro ao atualizar bot_id' })
   }
 })
 
