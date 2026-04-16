@@ -27,6 +27,7 @@ from src.services.data_service import (
 from src.services.portfolio_service import (
     get_binance_balances, get_prices_for_symbols, categorize
 )
+from src.services.advise_service import get_advise
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -166,6 +167,15 @@ async def onchain_score_route(symbol: str = "BTC"):
     """Score on-chain consolidado para uso no robô (-1 a +1)"""
     try:
         return await onchain_score(symbol.upper())
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/advise/{symbol}")
+async def advise_route(symbol: str = "BTC", strategy_id: Optional[str] = Query(None)):
+    """Score on-chain como conselheiro externo — não bloqueia trades"""
+    try:
+        return await get_advise(symbol.upper(), strategy_id)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
