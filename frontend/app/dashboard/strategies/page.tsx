@@ -1,119 +1,105 @@
 'use client'
 import { useEffect, useState } from 'react'
 
-const API = 'http://localhost:3020'
-const GA  = 'http://localhost:8110'
+const GA = 'http://localhost:8110'
+
+const TIPOS = ['trading', 'arbitragem', 'grid', 'dca']
+const PARES = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT']
+
+const TIPO_CONFIG: Record<string, { color: string; desc: string; retorno: string }> = {
+  trading:    { color: '#00d4ff', desc: 'Trend Following com MA + RSI', retorno: '4-5%/mês' },
+  arbitragem: { color: '#7c3aff', desc: 'CEX vs DEX spread',           retorno: '0.5%/trade' },
+  grid:       { color: '#ff0080', desc: 'Ordens em grade de preços',   retorno: '1-3%/mês' },
+  dca:        { color: '#00ff88', desc: 'Aportes periódicos + on-chain', retorno: 'Longo prazo' },
+}
+
+interface Estrategia {
+  id:              string
+  nome:            string
+  tipo:            string
+  par:             string
+  capital:         number
+  ativa:           boolean
+  fitness:         number
+  geracao:         number
+  retorno_mensal:  number
+  sharpe:          number
+  win_rate:        number
+  trades:          number
+  criada_em:       string
+}
 
 const glass = (accent = 'rgba(124,58,255,0.2)') => ({
   background: 'rgba(255,255,255,0.02)', border: `0.5px solid ${accent}`,
   backdropFilter: 'blur(20px)', borderRadius: '8px', padding: '1.25rem',
 } as React.CSSProperties)
 
-function getToken() {
-  if (typeof window !== 'undefined') return localStorage.getItem('finanmap_token') || ''
-  return ''
-}
-
-interface Estrategia {
-  id: string; nome: string; tipo: string; geracao: number
-  fitnessScore: number; retornoEsperado: number; volatilidade: number
-  ativa: boolean; symbol: string; timeframe: string; status: string
-  win_rate: number; max_dd: number
-  pesos: { w_rsi: number; w_macd: number; w_bollinger: number; w_ema: number }
-  risk: { stop_loss_pct: number; take_profit_pct: number; capital_pct: number }
-  dataCriacao: string
-}
-
-const TIPO_COLORS: Record<string, string> = {
-  trading: '#00d4ff', grid: '#7c3aff', dca: '#00ff88', arbitragem: '#ff0080'
-}
-const PARES = ['BTC/USDT','ETH/USDT','SOL/USDT','BNB/USDT','XRP/USDT']
+const MOCK: Estrategia[] = [
+  { id: '1', nome: 'Trend Follow BTC', tipo: 'trading',    par: 'BTC/USDT', capital: 5000,  ativa: true,  fitness: 1.82, geracao: 47, retorno_mensal: 4.2,  sharpe: 1.65, win_rate: 67, trades: 142, criada_em: '2024-01-15' },
+  { id: '2', nome: 'Grid ETH/USDT',    tipo: 'grid',       par: 'ETH/USDT', capital: 3000,  ativa: true,  fitness: 1.51, geracao: 31, retorno_mensal: 2.1,  sharpe: 1.32, win_rate: 71, trades: 89,  criada_em: '2024-02-03' },
+  { id: '3', nome: 'DCA Semanal',      tipo: 'dca',        par: 'BTC/USDT', capital: 10000, ativa: true,  fitness: 1.23, geracao: 12, retorno_mensal: 1.8,  sharpe: 1.10, win_rate: 58, trades: 24,  criada_em: '2024-01-01' },
+  { id: '4', nome: 'Arb BNB CEX-DEX', tipo: 'arbitragem', par: 'BNB/USDT', capital: 2000,  ativa: false, fitness: 0.94, geracao: 8,  retorno_mensal: 0.8,  sharpe: 0.88, win_rate: 82, trades: 310, criada_em: '2024-03-10' },
+]
 
 export default function EstrategiasPage() {
-  const [estrategias,  setEstrategias]  = useState<Estrategia[]>([])
-  const [loading,      setLoading]      = useState(true)
-  const [evoluindo,    setEvoluindo]    = useState(false)
-  const [ativando,     setAtivando]     = useState<string | null>(null)
-  const [showForm,     setShowForm]     = useState(false)
-  const [error,        setError]        = useState('')
-  const [success,      setSuccess]      = useState('')
-  const [selected,     setSelected]     = useState<string | null>(null)
-  const [form, setForm] = useState({
-    nome: '', symbol: 'BTC/USDT', timeframe: '1h',
-    data_limit: '500', population_size: '10', generations: '20',
-  })
+  const [estrategias, setEstrategias] = useState<Estrategia[]>(MOCK)
+  const [showForm, setShowForm]       = useState(false)
+  const [otimizando, setOtimizando]   = useState<string | null>(null)
+  const [form, setForm]               = useState({ nome: '', tipo: 'trading', par: 'BTC/USDT', capital: '1000', geracoes: '20' })
 
-  const fetchEstrategias = async () => {
-    const token = getToken()
+  const toggleAtiva = (id: string) =>
+    setEstrategias(prev => prev.map(e => e.id === id ? { ...e, ativa: !e.ativa } : e))
+
+  const deletar = (id: string) =>
+    setEstrategias(prev => prev.filter(e => e.id !== id))
+
+  const otimizar = async (id: string, par: string) => {
+    setOtimizando(id)
     try {
-      const r = await fetch(`${API}/api/ga/strategies`, {
-        headers: { Authorization: `Bearer ${token}` }
-      })
-      const data = await r.json()
-      setEstrategias(data.estrategias || [])
-    } catch { } finally { setLoading(false) }
-  }
-
-  useEffect(() => { fetchEstrategias() }, [])
-
-  const evoluirGA = async () => {
-    setEvoluindo(true); setError(''); setSuccess('')
-    const token = getToken()
-    try {
-      const r = await fetch(`${API}/api/ga/evolve/sync`, {
+      const r = await fetch(`${GA}/optimize`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          nome:            form.nome || `GA ${form.symbol} ${new Date().toLocaleDateString('pt-BR')}`,
-          symbol:          form.symbol,
-          timeframe:       form.timeframe,
-          data_limit:      parseInt(form.data_limit),
-          population_size: parseInt(form.population_size),
-          generations:     parseInt(form.generations),
-        }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbols: [par], generations: parseInt(form.geracoes), population_size: 50 }),
       })
       const data = await r.json()
-      if (!r.ok) throw new Error(data.error || 'Erro ao evoluir GA')
-      setSuccess(`✓ Estratégia criada! Fitness: ${data.ga_result?.best_fitness?.toFixed(2)} | Retorno: +${data.ga_result?.best_return?.toFixed(1)}%`)
-      setShowForm(false)
-      await fetchEstrategias()
-    } catch (e: any) {
-      setError(e.message)
-    } finally { setEvoluindo(false) }
-  }
-
-  const ativarEstrategia = async (id: string, dry_run = true) => {
-    setAtivando(id); setError('')
-    const token = getToken()
-    try {
-      const r = await fetch(`${API}/api/ga/strategies/${id}/activate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ capital: 109, dry_run: false, max_position: 0.25 }),
-      })
-      const data = await r.json()
-      if (!r.ok) throw new Error(data.error || 'Erro ao ativar')
-      setSuccess(`✓ Bot iniciado! ID: ${data.bot_id}`)
-      await fetchEstrategias()
-    } catch (e: any) {
-      setError(e.message)
-    } finally { setAtivando(null) }
-  }
-
-  const deletarEstrategia = async (id: string) => {
-    const token = getToken()
-    try {
-      await fetch(`${API}/api/ga/strategies/${id}`, {
-        method: 'DELETE', headers: { Authorization: `Bearer ${token}` }
-      })
-      setEstrategias(prev => prev.filter(e => e.id !== id))
-      if (selected === id) setSelected(null)
+      setEstrategias(prev => prev.map(e => e.id === id ? {
+        ...e,
+        fitness:  data.best_strategy?.fitness || e.fitness,
+        geracao:  e.geracao + (data.evolution_history?.length || 0),
+        sharpe:   data.metrics?.sharpe_ratio || e.sharpe,
+        win_rate: data.metrics?.win_rate || e.win_rate,
+      } : e))
     } catch { }
+    setOtimizando(null)
   }
 
-  const selectedE = estrategias.find(e => e.id === selected)
-  const ativas    = estrategias.filter(e => e.ativa).length
-  const melhor    = estrategias.reduce((b, e) => e.fitnessScore > (b?.fitnessScore || 0) ? e : b, estrategias[0])
+  const criarEstrategia = async () => {
+    if (!form.nome || !form.capital) return
+    const nova: Estrategia = {
+      id:             Date.now().toString(),
+      nome:           form.nome,
+      tipo:           form.tipo,
+      par:            form.par,
+      capital:        parseFloat(form.capital),
+      ativa:          false,
+      fitness:        0,
+      geracao:        0,
+      retorno_mensal: 0,
+      sharpe:         0,
+      win_rate:       0,
+      trades:         0,
+      criada_em:      new Date().toISOString().split('T')[0],
+    }
+    setEstrategias(prev => [nova, ...prev])
+    setShowForm(false)
+    setForm({ nome: '', tipo: 'trading', par: 'BTC/USDT', capital: '1000', geracoes: '20' })
+    // Otimiza automaticamente ao criar
+    await otimizar(nova.id, nova.par)
+  }
+
+  const ativas   = estrategias.filter(e => e.ativa)
+  const totalCap = estrategias.filter(e => e.ativa).reduce((s, e) => s + e.capital, 0)
+  const melhor   = estrategias.reduce((b, e) => e.fitness > b.fitness ? e : b, estrategias[0])
 
   return (
     <div style={{ fontFamily: '"Courier New", monospace', color: '#fff' }}>
@@ -123,48 +109,43 @@ export default function EstrategiasPage() {
         {/* Header */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '1.5rem' }}>
           <div>
-            <div style={{ fontSize: '10px', letterSpacing: '6px', color: 'rgba(124,58,255,0.5)', marginBottom: '4px' }}>ALGORITMO GENÉTICO</div>
+            <div style={{ fontSize: '10px', letterSpacing: '6px', color: 'rgba(124,58,255,0.5)', marginBottom: '4px' }}>ROBÔS DE TRADING</div>
             <h1 style={{ fontSize: '1.4rem', fontWeight: 700, margin: 0, background: 'linear-gradient(135deg, #00d4ff, #7c3aff)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Estratégias GA</h1>
           </div>
           <button onClick={() => setShowForm(!showForm)} style={{
-            padding: '0.7rem 1.5rem', fontSize: '10px', letterSpacing: '3px', cursor: 'pointer',
+            padding: '0.7rem 1.5rem', fontSize: '10px', letterSpacing: '3px',
             background: showForm ? 'rgba(255,50,50,0.2)' : 'linear-gradient(135deg, rgba(124,58,255,0.8), rgba(0,212,255,0.6))',
             border: `1px solid ${showForm ? 'rgba(255,50,50,0.4)' : 'rgba(124,58,255,0.5)'}`,
-            color: '#fff', borderRadius: '4px',
-          }}>{showForm ? '✕ CANCELAR' : '⟁ EVOLUIR COM GA'}</button>
+            color: '#fff', cursor: 'pointer', borderRadius: '4px',
+          }}>
+            {showForm ? '✕ CANCELAR' : '+ NOVA ESTRATÉGIA'}
+          </button>
         </div>
 
         {/* Métricas */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0,1fr))', gap: '0.75rem', marginBottom: '1.25rem' }}>
           {[
-            { label: 'TOTAL',         value: `${estrategias.length}`,                           color: '#00d4ff' },
-            { label: 'ATIVAS',         value: `${ativas}`,                                       color: '#00ff88' },
-            { label: 'MELHOR FITNESS', value: melhor ? melhor.fitnessScore.toFixed(2) : '—',    color: '#7c3aff' },
-            { label: 'MELHOR RETORNO', value: melhor ? `+${melhor.retornoEsperado.toFixed(1)}%` : '—', color: '#ff0080' },
+            { label: 'ATIVAS',        value: `${ativas.length}/${estrategias.length}`, color: '#00ff88' },
+            { label: 'CAPITAL ATIVO', value: `$${totalCap.toLocaleString()}`, color: '#00d4ff' },
+            { label: 'MELHOR FITNESS', value: melhor?.fitness.toFixed(2) || '—', color: '#7c3aff' },
+            { label: 'GERAÇÃO ATUAL', value: `#${Math.max(...estrategias.map(e => e.geracao))}`, color: '#ff0080' },
           ].map(({ label, value, color }) => (
             <div key={label} style={{ ...glass(`${color}25`), borderTop: `2px solid ${color}`, padding: '1rem' }}>
               <div style={{ fontSize: '8px', letterSpacing: '3px', color: 'rgba(255,255,255,0.3)', marginBottom: '0.5rem' }}>{label}</div>
-              <div style={{ fontSize: '1.4rem', fontWeight: 700, color }}>{value}</div>
+              <div style={{ fontSize: '1.4rem', fontWeight: 700, color, textShadow: `0 0 20px ${color}50` }}>{value}</div>
             </div>
           ))}
         </div>
 
-        {/* Alerts */}
-        {error   && <div style={{ ...glass('rgba(255,50,50,0.3)'), marginBottom: '1rem', color: '#ff6666', fontSize: '11px' }}>✕ {error}</div>}
-        {success && <div style={{ ...glass('rgba(0,255,136,0.2)'), marginBottom: '1rem', color: '#00ff88', fontSize: '11px' }}>{success}</div>}
-
-        {/* Formulário GA */}
+        {/* Formulário nova estratégia */}
         {showForm && (
           <div style={{ ...glass('rgba(0,212,255,0.2)'), marginBottom: '1.25rem' }}>
-            <div style={{ fontSize: '9px', letterSpacing: '4px', color: 'rgba(0,212,255,0.6)', marginBottom: '1rem' }}>
-              CONFIGURAR EVOLUÇÃO GA
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(0,1fr))', gap: '0.75rem', marginBottom: '1rem' }}>
+            <div style={{ fontSize: '9px', letterSpacing: '4px', color: 'rgba(0,212,255,0.6)', marginBottom: '1rem' }}>CONFIGURAR NOVA ESTRATÉGIA</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0,1fr))', gap: '0.75rem', marginBottom: '1rem' }}>
               {[
-                { label: 'NOME',        key: 'nome',            type: 'text',   placeholder: 'GA BTC Auto' },
-                { label: 'CANDLES',     key: 'data_limit',      type: 'number', placeholder: '500' },
-                { label: 'ROBÔS',       key: 'population_size', type: 'number', placeholder: '10' },
-                { label: 'GERAÇÕES',    key: 'generations',     type: 'number', placeholder: '20' },
+                { label: 'NOME', key: 'nome', type: 'text', placeholder: 'Ex: Trend BTC v2' },
+                { label: 'CAPITAL ($)', key: 'capital', type: 'number', placeholder: '1000' },
+                { label: 'GERAÇÕES GA', key: 'geracoes', type: 'number', placeholder: '20' },
               ].map(({ label, key, type, placeholder }) => (
                 <div key={key}>
                   <div style={{ fontSize: '8px', letterSpacing: '2px', color: 'rgba(255,255,255,0.3)', marginBottom: '4px' }}>{label}</div>
@@ -173,155 +154,109 @@ export default function EstrategiasPage() {
                     style={{ width: '100%', padding: '0.5rem', fontSize: '11px', background: 'rgba(255,255,255,0.05)', border: '0.5px solid rgba(255,255,255,0.15)', color: '#fff', borderRadius: '4px', fontFamily: 'inherit', boxSizing: 'border-box' }} />
                 </div>
               ))}
-              {[
-                { label: 'PAR',       key: 'symbol',    opts: PARES },
-                { label: 'TIMEFRAME', key: 'timeframe', opts: ['1h','4h','1d','15m'] },
-              ].map(({ label, key, opts }) => (
-                <div key={key}>
-                  <div style={{ fontSize: '8px', letterSpacing: '2px', color: 'rgba(255,255,255,0.3)', marginBottom: '4px' }}>{label}</div>
-                  <select value={(form as any)[key]} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
-                    style={{ width: '100%', padding: '0.5rem', fontSize: '11px', background: '#0a0020', border: '0.5px solid rgba(255,255,255,0.15)', color: '#fff', borderRadius: '4px', fontFamily: 'inherit' }}>
-                    {opts.map(o => <option key={o} value={o}>{o}</option>)}
-                  </select>
-                </div>
-              ))}
+              <div>
+                <div style={{ fontSize: '8px', letterSpacing: '2px', color: 'rgba(255,255,255,0.3)', marginBottom: '4px' }}>TIPO</div>
+                <select value={form.tipo} onChange={e => setForm(f => ({ ...f, tipo: e.target.value }))}
+                  style={{ width: '100%', padding: '0.5rem', fontSize: '11px', background: '#0a0020', border: '0.5px solid rgba(255,255,255,0.15)', color: '#fff', borderRadius: '4px', fontFamily: 'inherit' }}>
+                  {TIPOS.map(t => <option key={t} value={t}>{t.toUpperCase()}</option>)}
+                </select>
+              </div>
+              <div>
+                <div style={{ fontSize: '8px', letterSpacing: '2px', color: 'rgba(255,255,255,0.3)', marginBottom: '4px' }}>PAR</div>
+                <select value={form.par} onChange={e => setForm(f => ({ ...f, par: e.target.value }))}
+                  style={{ width: '100%', padding: '0.5rem', fontSize: '11px', background: '#0a0020', border: '0.5px solid rgba(255,255,255,0.15)', color: '#fff', borderRadius: '4px', fontFamily: 'inherit' }}>
+                  {PARES.map(p => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </div>
             </div>
-
-            {/* Info */}
-            <div style={{ padding: '0.75rem', background: 'rgba(255,255,255,0.02)', borderRadius: '4px', marginBottom: '1rem', fontSize: '10px', color: 'rgba(255,255,255,0.35)', lineHeight: 1.8 }}>
-              O GA vai criar <strong style={{ color: '#00d4ff' }}>{form.population_size} robôs</strong> com cromossomos aleatórios,
-              rodar backtest com dados reais Binance (<strong style={{ color: '#00d4ff' }}>{form.data_limit} candles</strong>),
-              selecionar os top 3, cruzar e mutar por <strong style={{ color: '#00d4ff' }}>{form.generations} gerações</strong>.
-              O melhor cromossomo é salvo automaticamente no banco.
+            {/* Preview tipo */}
+            <div style={{ padding: '0.75rem', background: 'rgba(255,255,255,0.02)', borderRadius: '4px', marginBottom: '1rem', display: 'flex', gap: '2rem' }}>
+              <div>
+                <div style={{ fontSize: '8px', color: 'rgba(255,255,255,0.3)', marginBottom: '2px' }}>ESTRATÉGIA</div>
+                <div style={{ fontSize: '11px', color: TIPO_CONFIG[form.tipo]?.color }}>{TIPO_CONFIG[form.tipo]?.desc}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: '8px', color: 'rgba(255,255,255,0.3)', marginBottom: '2px' }}>RETORNO ESPERADO</div>
+                <div style={{ fontSize: '11px', color: '#00ff88' }}>{TIPO_CONFIG[form.tipo]?.retorno}</div>
+              </div>
             </div>
-
-            <button onClick={evoluirGA} disabled={evoluindo} style={{
+            <button onClick={criarEstrategia} style={{
               padding: '0.7rem 2rem', fontSize: '11px', letterSpacing: '3px',
-              background: evoluindo ? 'rgba(124,58,255,0.3)' : 'linear-gradient(135deg, rgba(0,212,255,0.7), rgba(124,58,255,0.7))',
-              border: '1px solid rgba(0,212,255,0.4)', color: '#fff',
-              cursor: evoluindo ? 'wait' : 'pointer', borderRadius: '4px',
-            }}>{evoluindo ? '⟳ GA EVOLUINDO... (pode levar ~30s)' : '▸ INICIAR EVOLUÇÃO'}</button>
+              background: 'linear-gradient(135deg, rgba(0,212,255,0.7), rgba(124,58,255,0.7))',
+              border: '1px solid rgba(0,212,255,0.4)', color: '#fff', cursor: 'pointer', borderRadius: '4px',
+            }}>▸ CRIAR E OTIMIZAR COM GA</button>
           </div>
         )}
 
-        {/* Lista + detalhes */}
-        <div style={{ display: 'grid', gridTemplateColumns: selected ? '1fr 1.2fr' : '1fr', gap: '1rem' }}>
+        {/* Lista de estratégias */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+          {estrategias.map(e => {
+            const cfg = TIPO_CONFIG[e.tipo]
+            const isOtimizando = otimizando === e.id
+            return (
+              <div key={e.id} style={{ ...glass(e.ativa ? `${cfg.color}30` : 'rgba(255,255,255,0.08)'), borderLeft: `3px solid ${e.ativa ? cfg.color : 'rgba(255,255,255,0.1)'}`, transition: 'all 0.3s' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
 
-          {/* Lista */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-            {loading ? (
-              <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.3)', textAlign: 'center', padding: '2rem' }}>⟳ Carregando...</div>
-            ) : estrategias.length === 0 ? (
-              <div style={{ ...glass(), textAlign: 'center', padding: '2rem', color: 'rgba(255,255,255,0.3)', fontSize: '11px' }}>
-                Nenhuma estratégia ainda.<br/>Clique em <span style={{ color: '#7c3aff' }}>EVOLUIR COM GA</span> para criar a primeira.
-              </div>
-            ) : (
-              estrategias.map(e => {
-                const color = TIPO_COLORS[e.tipo] || '#888'
-                const isSelected = selected === e.id
-                return (
-                  <div key={e.id} onClick={() => setSelected(isSelected ? null : e.id)} style={{
-                    ...glass(isSelected ? `${color}40` : 'rgba(255,255,255,0.08)'),
-                    borderLeft: `3px solid ${e.ativa ? '#00ff88' : color}`,
-                    cursor: 'pointer', transition: 'all 0.2s',
-                  }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                      <div style={{ width: '7px', height: '7px', borderRadius: '50%', flexShrink: 0, background: e.ativa ? '#00ff88' : 'rgba(255,255,255,0.2)', boxShadow: e.ativa ? '0 0 8px #00ff88' : 'none' }} />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '4px' }}>
-                          <span style={{ fontSize: '12px', fontWeight: 700, color: '#fff' }}>{e.nome}</span>
-                          <span style={{ fontSize: '8px', padding: '2px 6px', borderRadius: '10px', background: color + '15', color, letterSpacing: '2px' }}>{e.tipo.toUpperCase()}</span>
-                          <span style={{ fontSize: '8px', color: e.status === 'concluido' ? '#00ff88' : e.status === 'evoluindo' ? '#f59e0b' : 'rgba(255,255,255,0.3)' }}>
-                            {e.status === 'concluido' ? '✓' : e.status === 'evoluindo' ? '⟳' : '○'} {e.status}
-                          </span>
-                        </div>
-                        <div style={{ display: 'flex', gap: '1rem', fontSize: '9px', color: 'rgba(255,255,255,0.35)' }}>
-                          <span>{e.symbol} · {e.timeframe}</span>
-                          <span>Fitness: <span style={{ color }}>{e.fitnessScore.toFixed(2)}</span></span>
-                          <span>Retorno: <span style={{ color: '#00ff88' }}>+{e.retornoEsperado.toFixed(1)}%</span></span>
-                          <span>Gen #{e.geracao}</span>
-                        </div>
-                      </div>
-                      <div style={{ display: 'flex', gap: '0.5rem', flexShrink: 0 }}>
-                        {!e.ativa && e.status === 'concluido' && (
-                          <button onClick={ev => { ev.stopPropagation(); ativarEstrategia(e.id, true) }}
-                            disabled={ativando === e.id} style={{ padding: '0.35rem 0.75rem', fontSize: '9px', letterSpacing: '2px', cursor: 'pointer', background: 'rgba(0,255,136,0.1)', border: '0.5px solid rgba(0,255,136,0.3)', color: '#00ff88', borderRadius: '4px' }}>
-                            {ativando === e.id ? '⟳' : '▸ ATIVAR'}
-                          </button>
-                        )}
-                        <button onClick={ev => { ev.stopPropagation(); deletarEstrategia(e.id) }} style={{ padding: '0.35rem 0.6rem', fontSize: '9px', cursor: 'pointer', background: 'transparent', border: '0.5px solid rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.3)', borderRadius: '4px' }}>✕</button>
-                      </div>
+                  {/* Status indicator */}
+                  <div style={{ width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0, background: e.ativa ? '#00ff88' : 'rgba(255,255,255,0.2)', boxShadow: e.ativa ? '0 0 10px #00ff88' : 'none' }} />
+
+                  {/* Info principal */}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.4rem' }}>
+                      <span style={{ fontSize: '13px', fontWeight: 700, color: '#fff', letterSpacing: '1px' }}>{e.nome}</span>
+                      <span style={{ fontSize: '8px', padding: '2px 8px', borderRadius: '10px', background: cfg.color + '15', color: cfg.color, letterSpacing: '2px' }}>{e.tipo.toUpperCase()}</span>
+                      <span style={{ fontSize: '9px', color: 'rgba(255,255,255,0.3)' }}>{e.par}</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '1.5rem', fontSize: '9px', color: 'rgba(255,255,255,0.35)' }}>
+                      <span>Capital: <span style={{ color: '#00d4ff' }}>${e.capital.toLocaleString()}</span></span>
+                      <span>Retorno: <span style={{ color: '#00ff88' }}>+{e.retorno_mensal}%/mês</span></span>
+                      <span>Trades: <span style={{ color: 'rgba(255,255,255,0.6)' }}>{e.trades}</span></span>
+                      <span>Win Rate: <span style={{ color: e.win_rate >= 60 ? '#00ff88' : '#f59e0b' }}>{e.win_rate}%</span></span>
+                      <span>Criada: <span style={{ color: 'rgba(255,255,255,0.4)' }}>{e.criada_em}</span></span>
                     </div>
                   </div>
-                )
-              })
-            )}
-          </div>
 
-          {/* Detalhes da estratégia selecionada */}
-          {selectedE && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-              <div style={glass(`${TIPO_COLORS[selectedE.tipo] || '#888'}30`)}>
-                <div style={{ fontSize: '9px', letterSpacing: '4px', color: 'rgba(255,255,255,0.3)', marginBottom: '1rem' }}>CROMOSSOMO</div>
+                  {/* Métricas GA */}
+                  <div style={{ display: 'flex', gap: '1.5rem', alignItems: 'center' }}>
+                    <div style={{ textAlign: 'center' }}>
+                      <div style={{ fontSize: '8px', color: 'rgba(255,255,255,0.25)', marginBottom: '2px' }}>FITNESS</div>
+                      <div style={{ fontSize: '14px', fontWeight: 700, color: cfg.color }}>{e.fitness.toFixed(2)}</div>
+                    </div>
+                    <div style={{ textAlign: 'center' }}>
+                      <div style={{ fontSize: '8px', color: 'rgba(255,255,255,0.25)', marginBottom: '2px' }}>SHARPE</div>
+                      <div style={{ fontSize: '14px', fontWeight: 700, color: 'rgba(255,255,255,0.7)' }}>{e.sharpe.toFixed(2)}</div>
+                    </div>
+                    <div style={{ textAlign: 'center' }}>
+                      <div style={{ fontSize: '8px', color: 'rgba(255,255,255,0.25)', marginBottom: '2px' }}>GEN</div>
+                      <div style={{ fontSize: '14px', fontWeight: 700, color: '#7c3aff' }}>#{e.geracao}</div>
+                    </div>
+                  </div>
 
-                {/* Pesos dos indicadores */}
-                <div style={{ marginBottom: '1rem' }}>
-                  <div style={{ fontSize: '8px', letterSpacing: '2px', color: 'rgba(255,255,255,0.25)', marginBottom: '8px' }}>PESOS DOS INDICADORES (evoluídos pelo GA)</div>
-                  {Object.entries(selectedE.pesos).map(([key, val]) => {
-                    const labels: Record<string, string> = { w_rsi: 'RSI', w_macd: 'MACD', w_bollinger: 'Bollinger', w_ema: 'EMA Trend' }
-                    const colors: Record<string, string> = { w_rsi: '#00d4ff', w_macd: '#7c3aff', w_bollinger: '#ff0080', w_ema: '#00ff88' }
-                    const color = colors[key] || '#888'
-                    return (
-                      <div key={key} style={{ marginBottom: '6px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px', fontSize: '9px' }}>
-                          <span style={{ color: 'rgba(255,255,255,0.4)' }}>{labels[key] || key}</span>
-                          <span style={{ color }}>{(val * 100).toFixed(1)}%</span>
-                        </div>
-                        <div style={{ height: '3px', background: 'rgba(255,255,255,0.06)', borderRadius: '2px', overflow: 'hidden' }}>
-                          <div style={{ height: '100%', width: `${val * 100}%`, background: color, boxShadow: `0 0 6px ${color}` }} />
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
+                  {/* Ações */}
+                  <div style={{ display: 'flex', gap: '0.5rem', flexShrink: 0 }}>
+                    <button onClick={() => otimizar(e.id, e.par)} disabled={!!isOtimizando} style={{
+                      padding: '0.4rem 0.8rem', fontSize: '9px', letterSpacing: '2px', cursor: 'pointer',
+                      background: isOtimizando ? 'rgba(124,58,255,0.3)' : 'rgba(124,58,255,0.15)',
+                      border: '0.5px solid rgba(124,58,255,0.4)', color: '#7c3aff', borderRadius: '4px',
+                    }}>{isOtimizando ? '⟳ GA...' : '⟁ OTIMIZAR'}</button>
 
-                {/* Parâmetros de risco */}
-                <div>
-                  <div style={{ fontSize: '8px', letterSpacing: '2px', color: 'rgba(255,255,255,0.25)', marginBottom: '8px' }}>PARÂMETROS DE RISCO</div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.5rem' }}>
-                    {[
-                      { label: 'Stop Loss',   value: `${selectedE.risk.stop_loss_pct.toFixed(2)}%`,   color: '#ff4444' },
-                      { label: 'Take Profit', value: `${selectedE.risk.take_profit_pct.toFixed(2)}%`, color: '#00ff88' },
-                      { label: 'Capital/Trade', value: `${(selectedE.risk.capital_pct * 100).toFixed(1)}%`, color: '#f59e0b' },
-                    ].map(({ label, value, color }) => (
-                      <div key={label} style={{ textAlign: 'center', padding: '0.5rem', background: 'rgba(255,255,255,0.02)', borderRadius: '4px' }}>
-                        <div style={{ fontSize: '8px', color: 'rgba(255,255,255,0.25)', marginBottom: '2px' }}>{label}</div>
-                        <div style={{ fontSize: '13px', fontWeight: 700, color }}>{value}</div>
-                      </div>
-                    ))}
+                    <button onClick={() => toggleAtiva(e.id)} style={{
+                      padding: '0.4rem 0.8rem', fontSize: '9px', letterSpacing: '2px', cursor: 'pointer',
+                      background: e.ativa ? 'rgba(255,0,0,0.1)' : 'rgba(0,255,136,0.1)',
+                      border: `0.5px solid ${e.ativa ? 'rgba(255,0,0,0.3)' : 'rgba(0,255,136,0.3)'}`,
+                      color: e.ativa ? '#ff4444' : '#00ff88', borderRadius: '4px',
+                    }}>{e.ativa ? '◼ PARAR' : '▸ ATIVAR'}</button>
+
+                    <button onClick={() => deletar(e.id)} style={{
+                      padding: '0.4rem 0.6rem', fontSize: '9px', cursor: 'pointer',
+                      background: 'transparent', border: '0.5px solid rgba(255,255,255,0.1)',
+                      color: 'rgba(255,255,255,0.3)', borderRadius: '4px',
+                    }}>✕</button>
                   </div>
                 </div>
               </div>
-
-              {/* Métricas de performance */}
-              <div style={glass('rgba(0,212,255,0.15)')}>
-                <div style={{ fontSize: '9px', letterSpacing: '4px', color: 'rgba(0,212,255,0.5)', marginBottom: '1rem' }}>PERFORMANCE NO BACKTEST</div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '0.5rem' }}>
-                  {[
-                    { label: 'Fitness Score',   value: selectedE.fitnessScore.toFixed(4),   color: '#7c3aff' },
-                    { label: 'Retorno',         value: `+${selectedE.retornoEsperado.toFixed(2)}%`, color: '#00ff88' },
-                    { label: 'Max Drawdown',    value: `-${selectedE.volatilidade.toFixed(2)}%`,    color: '#ff4444' },
-                    { label: 'Geração',         value: `#${selectedE.geracao}`,             color: '#f59e0b' },
-                  ].map(({ label, value, color }) => (
-                    <div key={label} style={{ padding: '0.75rem', background: 'rgba(255,255,255,0.02)', borderRadius: '4px' }}>
-                      <div style={{ fontSize: '8px', color: 'rgba(255,255,255,0.25)', marginBottom: '4px' }}>{label}</div>
-                      <div style={{ fontSize: '1.1rem', fontWeight: 700, color }}>{value}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
+            )
+          })}
         </div>
       </div>
     </div>

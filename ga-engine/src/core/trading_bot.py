@@ -294,7 +294,7 @@ class TradingBot:
                     )
 
             if flow_approved:
-                self._log(f"Sinal BUY confirmado! Técnico={tech_score:+.4f} Fluxo={flow.flow_score:+.3f if flow else 'N/A'}")
+                self._log(f"Sinal BUY confirmado! Técnico={tech_score:+.4f} Fluxo={flow.flow_score:+.3f}")
                 await self._open_position("long", price)
 
         # 7. Saída por sinal técnico de venda

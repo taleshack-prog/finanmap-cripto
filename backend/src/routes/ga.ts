@@ -252,7 +252,7 @@ router.post('/strategies/:id/activate', authenticate, async (req: AuthRequest, r
             max_position:     req.body.max_position || 0.25,
             dry_run:          req.body.dry_run ?? false,
             use_flow_filter:  true,
-            min_buy_pressure: 0.52,
+            min_buy_pressure: req.body.min_buy_pressure || 0.52,
             max_spread_pct:   0.05,
             min_signal:       0.05,
             exchange:         'binance',
