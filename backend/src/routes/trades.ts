@@ -1,4 +1,4 @@
-import { Router, Response } from 'express';
+import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authenticate, AuthRequest } from '../middleware/auth';
 
@@ -126,22 +126,74 @@ router.put('/:id/close', authenticate, async (req: AuthRequest, res: Response) =
   }
 });
 
-// DELETE /api/trades/:id — cancela trade aberto
-router.delete('/:id', authenticate, async (req: AuthRequest, res: Response) => {
+// ─── POST /api/trades/internal/create ──────────────────────
+// Rota interna — chamada pelo GA Engine sem JWT        
+router.post('/internal/create', async (req: Request, res: Response) => {
   try {
-    const trade = await prisma.trade.findFirst({
-      where: { id: req.params.id, userId: req.user!.userId },
-    });
-    if (!trade) return res.status(404).json({ error: 'Não encontrado' });
+    const {
+      user_id, userId,
+      strategy_id, estrategiaId,
+      par_trading, parTrading,
+      tipo, quantidade,
+      preco_entrada, precoEntrada,
+      bot_id, botId,
+      motivo,
+      status,
+    } = req.body
 
-    await prisma.trade.update({
-      where: { id: req.params.id },
-      data:  { status: 'cancelado' },
+    const _userId      = userId      || user_id
+    const _parTrading  = parTrading  || par_trading
+    const _precoEntrada = precoEntrada || preco_entrada
+    const _estrategiaId = estrategiaId || strategy_id
+    const _botId       = botId       || bot_id
+
+    if (!_userId || !_parTrading || !tipo || !quantidade || !_precoEntrada)
+      return res.status(400).json({ error: 'Campos obrigatórios: userId, parTrading, tipo, quantidade, precoEntrada' });
+
+    const trade = await prisma.trade.create({
+      data: {
+        userId: _userId,
+        estrategiaId: _estrategiaId || null,
+        exchangeName: 'binance',
+        parTrading: _parTrading,
+        tipo,
+        quantidade,
+        precoEntrada: _precoEntrada,
+        status: 'aberto',
+        botId: _botId,
+        motivo,
+      },
     });
-    res.json({ success: true });
-  } catch {
-    res.status(500).json({ error: 'Erro ao cancelar trade' });
+
+    res.status(201).json(trade);
+  } catch (e) {
+    res.status(500).json({ error: 'Erro ao criar trade interno' });
   }
 });
+
+// ─── PATCH /api/trades/internal/:id/close ──────────────────
+router.patch('/internal/:id/close', async (req: Request, res: Response) => {
+  try {
+    const { preco_saida, precoSaida, lucro, lucro_percentual, lucroPercentual, status, motivo } = req.body
+
+    const trade = await prisma.trade.findFirst({ where: { id: req.params.id } })
+    if (!trade) return res.status(404).json({ error: 'Trade não encontrado' })
+
+    const updated = await prisma.trade.update({
+      where: { id: req.params.id },
+      data: {
+        precoSaida:      Number(precoSaida || preco_saida),
+        lucro:           Number(lucro),
+        lucroPercentual: Number(lucroPercentual || lucro_percentual),
+        status:          status || 'fechado',
+        timestampSaida:  new Date(),
+        motivo:          motivo || null,
+      },
+    })
+    res.json(updated)
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message })
+  }
+})
 
 export default router;

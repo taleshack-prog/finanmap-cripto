@@ -75,5 +75,8 @@ model Trade {
   user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   estrategia Estrategia? @relation(fields: [estrategiaId], references: [id])
 
+  botId           String?
+  motivo          String?
+
   @@index([userId, status])
 }

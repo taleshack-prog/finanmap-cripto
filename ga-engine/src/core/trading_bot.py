@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from src.services.data_service import get_ohlcv, get_ticker, get_order_book
 from src.services.technical_analysis import generate_technical_signals
 from src.services.order_executor import OrderExecutor, OrderResult
+from src.services.trade_persistence import save_trade_open, save_trade_close
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,7 @@ class TradingBot:
             dry_run    = config.dry_run,
         )
         self._task: Optional[asyncio.Task] = None
+        self.open_trade_id: Optional[str] = None
 
     def _log(self, msg: str, level: str = "INFO"):
         entry = {"ts": int(time.time()), "level": level, "msg": msg}
@@ -322,6 +324,17 @@ class TradingBot:
             self.state.entry_price   = result.executed_price or price
             self.state.position_size = quantity
             self.state.total_trades += 1
+            self.open_trade_id = await save_trade_open(
+                user_id=self.config.user_id,
+                estrategia_id=self.config.strategy_id,
+                exchange_name=self.config.exchange,
+                par_trading=self.config.symbol,
+                tipo=side,
+                quantidade=quantity,
+                preco_entrada=self.state.entry_price,
+                bot_id=self.config.bot_id,
+                motivo=f"SIGNAL_{side.upper()}"
+            )
             self._log(f"Posição aberta | Exec: ${self.state.entry_price:,.2f} | ID: {result.order_id}")
         else:
             self._log(f"Falha ao abrir: {result.error}", "ERROR")
@@ -350,6 +363,15 @@ class TradingBot:
                 f"Posição fechada | Motivo: {reason} | "
                 f"PnL: {pnl_pct:+.2f}% (${pnl_usd:+.2f})"
             )
+
+            await save_trade_close(
+                trade_id=self.open_trade_id,
+                preco_saida=exit_price,
+                lucro=pnl_usd,
+                lucro_percentual=pnl_pct,
+                motivo=reason
+            )
+            self.open_trade_id = None
 
             self.state.position       = "none"
             self.state.entry_price    = 0.0
