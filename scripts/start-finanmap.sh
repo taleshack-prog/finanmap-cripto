@@ -91,6 +91,15 @@ echo -e "${YELLOW}▸ Iniciando GA Engine (FastAPI + Python)...${NC}"
 cd "$PROJECT_DIR/ga-engine"
 source venv/bin/activate
 export $(cat "$PROJECT_DIR/.env" | grep -v '#' | grep -v '^$' | xargs)
+# Aguarda backend estar pronto antes de subir GA Engine
+echo "  Aguardando backend..."
+for i in {1..30}; do
+    if curl -s http://localhost:3020/api/status > /dev/null 2>&1; then
+        echo "  ✓ Backend pronto"
+        break
+    fi
+    sleep 2
+done
 uvicorn src.main:app --port $GA_PORT > "$LOG_DIR/ga-engine.log" 2>&1 &
 GA_PID=$!
 echo $GA_PID > "$LOG_DIR/ga-engine.pid"
