@@ -77,7 +77,7 @@ export default function StrategiesPage() {
     try {
       const r = await fetch(`${API}/api/ga/strategies/${id}/activate`, {
         method: 'POST', headers,
-        body: JSON.stringify({ capital: 109, dry_run: false, min_buy_pressure: 0.52 }),
+        body: JSON.stringify({ capital: 30, dry_run: false, min_buy_pressure: 0.52 }),
       })
       const d = await r.json()
       if (r.ok) {

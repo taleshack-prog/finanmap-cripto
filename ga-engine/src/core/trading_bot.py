@@ -332,8 +332,24 @@ class TradingBot:
     # ─── EXECUÇÃO DE ORDENS ─────────────────────────────────
 
     async def _open_position(self, side: str, price: float):
-        size_usd = self.config.capital * self.config.max_position
-        quantity = round(size_usd / price, 6)
+        # Kelly Sizing Antifrágil (half-Kelly para proteção contra ruína)
+        win_rate  = self.state.win_rate / 100 if self.state.total_trades > 3 else 0.55
+        rr_ratio  = self.config.take_profit_pct / max(self.config.stop_loss_pct, 0.1)
+        kelly_f   = (win_rate * (rr_ratio + 1) - 1) / rr_ratio
+        half_kelly = max(0.03, min(kelly_f * 0.5, 0.20))  # entre 3% e 20%
+
+        # Stress on-chain: reduz tamanho se advise RED
+        onchain_stress = getattr(self, '_onchain_stress', 0.0)
+        kelly_adjusted = half_kelly * (1 - 0.3 * onchain_stress)
+
+        size_usd  = self.config.capital * kelly_adjusted
+        quantity  = round(size_usd / price, 6)
+        self._log(
+            f"Kelly sizing | WR={win_rate:.0%} R:R={rr_ratio:.1f} "
+            f"f*={kelly_f:.3f} half={half_kelly:.3f} "
+            f"stress={onchain_stress:.2f} → {kelly_adjusted:.3f} "
+            f"= ${size_usd:.2f}"
+        )
 
         self._log(f"ABRINDO {side.upper()} | ${price:,.2f} | Qtd: {quantity} | ${size_usd:.2f}")
 

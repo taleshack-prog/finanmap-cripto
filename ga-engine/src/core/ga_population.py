@@ -233,7 +233,12 @@ def _compute_fitness_barbell(returns: list) -> dict:
                 "sharpe": sharpe, "sortino": sortino, "profit_factor": pf,
                 "win_rate": win_rate, "max_dd": max_dd, "total_return": total_return}
 
-    penalty = max(0.0, (SHARPE_MIN - sharpe) * 0.5) if sharpe < SHARPE_MIN and len(returns) > 10 else 0.0
+    # Threshold dinâmico baseado em Sharpe e MDD
+    sharpe_14d = sharpe  # aproximação com dados disponíveis
+    mdd_7d     = abs(max_dd) / 100
+    threshold_t = 0.55 + 0.15 * sharpe_14d - 0.08 * mdd_7d
+    threshold_t = max(0.3, min(threshold_t, 0.85))  # clamp [0.3, 0.85]
+    penalty = max(0.0, (threshold_t - sharpe) * 0.5) if sharpe < threshold_t and len(returns) > 10 else 0.0
 
     fitness = (
         0.40 * sharpe + 0.30 * sortino +
