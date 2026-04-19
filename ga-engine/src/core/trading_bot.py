@@ -294,10 +294,8 @@ class TradingBot:
                         "WARNING"
                     )
             if flow_approved:
-                self._log(
-                    f"Sinal BUY confirmado! Técnico={tech_score:+.4f} "
-                    f"Fluxo={flow.flow_score:+.3f if flow else 0.0}"
-                )
+                flow_score_str = f"{flow.flow_score:+.3f}" if flow else "0.000"
+                self._log(f"Sinal BUY confirmado! Técnico={tech_score:+.4f} Fluxo={flow_score_str}")
                 await self._open_position("long", price)
 
         # 7. Manutenção de posição aberta — técnica + quantitativa (SEM fluxo)
@@ -353,7 +351,7 @@ class TradingBot:
             self.state.total_trades += 1
             self.open_trade_id = await save_trade_open(
                 user_id=self.config.user_id,
-                estrategia_id=self.config.strategy_id,
+                strategy_id=self.config.strategy_id,
                 exchange_name=self.config.exchange,
                 par_trading=self.config.symbol,
                 tipo=side,
