@@ -296,6 +296,15 @@ class TradingBot:
             if flow_approved:
                 flow_score_str = f"{flow.flow_score:+.3f}" if flow else "0.000"
                 self._log(f"Sinal BUY confirmado! Técnico={tech_score:+.4f} Fluxo={flow_score_str}")
+                # Stress test pré-execute — valida MDD projetado
+                stress_ok = self._stress_test(ohlcv["closes"][-30:] if len(ohlcv["closes"]) >= 30 else ohlcv["closes"])
+                if not stress_ok:
+                    self._log(
+                        f"Stress test REPROVADO — MDD projetado >12% | "
+                        f"Aguardando próximo tick",
+                        "WARNING"
+                    )
+                    return
                 await self._open_position("long", price)
 
         # 7. Manutenção de posição aberta — técnica + quantitativa (SEM fluxo)
@@ -328,6 +337,23 @@ class TradingBot:
                 f"Score: {tech_score:+.4f} | "
                 f"Fluxo ignorado em manutenção"
             )
+
+    # ─── STRESS TEST ────────────────────────────────────────
+
+    def _stress_test(self, closes: list) -> bool:
+        """Mini stress test — verifica MDD dos últimos 30 candles."""
+        try:
+            import numpy as np
+            arr = np.array(closes, dtype=float)
+            returns = np.diff(arr) / arr[:-1]
+            cumret  = np.cumprod(1 + returns)
+            peak    = np.maximum.accumulate(cumret)
+            mdd     = float(np.min((cumret - peak) / peak) * 100)
+            self._log(f"Stress test | MDD 30c: {mdd:.1f}%")
+            return mdd > -12.0  # passa se MDD < 12%
+        except Exception as e:
+            self._log(f"Stress test erro: {e}", "WARNING")
+            return True  # em caso de erro, permite trade
 
     # ─── EXECUÇÃO DE ORDENS ─────────────────────────────────
 
