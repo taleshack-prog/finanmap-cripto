@@ -282,27 +282,54 @@ class TradingBot:
                 await self._close_position("TAKE_PROFIT", price)
                 return
 
-        # 6. Decisão de entrada — técnica + fluxo
+        # 6. Decisão de entrada — técnica + fluxo (fluxo SÓ na entrada)
         if tech_direction == "BUY" and self.state.position == "none":
             flow_approved = True
-            if self.config.use_flow_filter and self.config.flow_confirmation and flow:
+            if self.config.use_flow_filter and flow:
                 flow_approved = flow.flow_ok
                 if not flow_approved:
                     self._log(
                         f"Sinal BUY bloqueado pelo fluxo | "
-                        f"Pressure: {flow.buy_pressure:.1%} < {self.config.min_buy_pressure:.1%} "
-                        f"ou spread alto: {flow.spread_pct:.4f}%",
+                        f"Pressure: {flow.buy_pressure:.1%} < {self.config.min_buy_pressure:.1%}",
                         "WARNING"
                     )
-
             if flow_approved:
-                self._log(f"Sinal BUY confirmado! Técnico={tech_score:+.4f} Fluxo={flow.flow_score:+.3f}")
+                self._log(
+                    f"Sinal BUY confirmado! Técnico={tech_score:+.4f} "
+                    f"Fluxo={flow.flow_score:+.3f if flow else 0.0}"
+                )
                 await self._open_position("long", price)
 
-        # 7. Saída por sinal técnico de venda
-        elif tech_direction == "SELL" and self.state.position == "long":
-            self._log(f"Sinal SELL técnico | Score: {tech_score:+.4f}")
-            await self._close_position("SIGNAL_SELL", price)
+        # 7. Manutenção de posição aberta — técnica + quantitativa (SEM fluxo)
+        elif self.state.position == "long":
+            # 7a. Saída por sinal técnico forte de venda
+            if tech_direction == "SELL" and tech_score < -0.15:
+                self._log(
+                    f"Saída técnica forte | Score: {tech_score:+.4f} | "
+                    f"PnL atual: {self.state.unrealized_pnl:+.2f}%"
+                )
+                await self._close_position("SIGNAL_SELL", price)
+                return
+
+            # 7b. Monitoramento quantitativo da posição
+            # Calcula momentum do preço desde a entrada
+            if self.state.entry_price > 0:
+                momentum = (price - self.state.entry_price) / self.state.entry_price
+                # Saída se momentum muito negativo E técnica confirmando SELL
+                if momentum < -0.008 and tech_score < -0.05:
+                    self._log(
+                        f"Saída quantitativa | Momentum: {momentum:+.3f} | "
+                        f"Score: {tech_score:+.4f} | PnL: {self.state.unrealized_pnl:+.2f}%",
+                        "WARNING"
+                    )
+                    await self._close_position("QUANT_EXIT", price)
+                    return
+
+            self._log(
+                f"Posição mantida | PnL: {self.state.unrealized_pnl:+.2f}% | "
+                f"Score: {tech_score:+.4f} | "
+                f"Fluxo ignorado em manutenção"
+            )
 
     # ─── EXECUÇÃO DE ORDENS ─────────────────────────────────
 
