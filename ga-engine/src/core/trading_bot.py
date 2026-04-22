@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 from src.services.data_service import get_ohlcv, get_ticker, get_order_book
 from src.services.technical_analysis import generate_technical_signals
-from src.services.technical_analysis import volume_delta, atr_normalized, rvp_score
+from src.services.technical_analysis import volume_delta, atr_normalized, rvp_score, zscore_vwap
 from src.services.order_executor import OrderExecutor, OrderResult
 from src.services.trade_persistence import save_trade_open, save_trade_close
 
@@ -319,6 +319,30 @@ class TradingBot:
                 atr_r   = atr_n["atr_ratio"][-1] if atr_n["atr_ratio"] else 1.0
                 regime  = atr_n["regime"][-1] if atr_n["regime"] else "normal"
 
+                # Z-Score VWAP — preço esticado?
+                highs_  = ohlcv.get("highs",   closes_)
+                lows_   = ohlcv.get("lows",    closes_)
+                vols_   = ohlcv.get("volumes", [1.0] * len(closes_))
+
+                zs      = zscore_vwap(highs_, lows_, closes_, vols_, period=20)
+                z_score = zs["zscore"][-1] if zs["zscore"] else 0.0
+                z_signal = zs["signal"][-1] if zs["signal"] else "neutro"
+                z_score_val = zs["score"][-1] if zs["score"] else 0.0
+
+                # Bloqueia compra se preço muito esticado para cima
+                if z_score > 2.0:
+                    self._log(
+                        f"Z-Score BLOQUEADO | z={z_score:.2f} ({z_signal}) | "
+                        f"Preço esticado {z_score:.1f}σ acima do VWAP",
+                        "WARNING"
+                    )
+                    return
+
+                self._log(
+                    f"Z-Score VWAP | z={z_score:.2f} | signal={z_signal} | "
+                    f"VWAP=${zs['vwap'][-1]:,.2f if zs['vwap'][-1] else 0:.2f}"
+                )
+
                 # RVP
                 win_rate_est = self.state.win_rate / 100 if self.state.total_trades > 3 else 0.55
                 rvp = rvp_score(
@@ -331,7 +355,8 @@ class TradingBot:
 
                 self._log(
                     f"RVP | score={rvp['rvp']:.3f} | EV={rvp['ev']:.3f} | "
-                    f"VolDelta={vd_score:+.3f} | ATR_ratio={atr_r:.2f} | regime={regime}"
+                    f"VolDelta={vd_score:+.3f} | ATR_ratio={atr_r:.2f} | "
+                    f"Z={z_score:.2f} | regime={regime}"
                 )
 
                 if not rvp["approved"] and self.state.total_trades > 3:

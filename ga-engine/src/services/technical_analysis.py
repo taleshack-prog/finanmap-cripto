@@ -374,6 +374,97 @@ def rvp_score(
     }
 
 
+def vwap(
+    highs:   list[float],
+    lows:    list[float],
+    closes:  list[float],
+    volumes: list[float],
+    period:  int = 20,
+) -> list[float]:
+    """
+    VWAP — Volume Weighted Average Price.
+    Preço médio ponderado pelo volume — referência institucional.
+    Preço acima do VWAP = compradores no controle.
+    Preço abaixo do VWAP = vendedores no controle.
+    """
+    result = [None] * len(closes)
+    for i in range(period - 1, len(closes)):
+        window_h = highs[i - period + 1:i + 1]
+        window_l = lows[i - period + 1:i + 1]
+        window_c = closes[i - period + 1:i + 1]
+        window_v = volumes[i - period + 1:i + 1]
+        typical  = [(h + l + c) / 3 for h, l, c in zip(window_h, window_l, window_c)]
+        tp_vol   = sum(t * v for t, v in zip(typical, window_v))
+        vol_sum  = sum(window_v)
+        result[i] = tp_vol / vol_sum if vol_sum > 0 else closes[i]
+    return result
+
+
+def zscore_vwap(
+    highs:   list[float],
+    lows:    list[float],
+    closes:  list[float],
+    volumes: list[float],
+    period:  int = 20,
+    zscore_period: int = 50,
+) -> dict:
+    """
+    Z-Score do preço em relação ao VWAP.
+    Mede quantos desvios padrão o preço está do VWAP.
+
+    z > +2.0 → preço esticado para cima → EVITAR COMPRA
+    z < -2.0 → preço esticado para baixo → possível reversão bullish
+    -1.0 < z < +1.0 → zona neutra — entradas mais seguras
+
+    Especialmente útil para ETH e SOL que têm movimentos bruscos
+    e frequentemente revertem após Z-Score extremo.
+    """
+    vwap_vals = vwap(highs, lows, closes, volumes, period)
+    result_z  = [0.0] * len(closes)
+    result_signal = ["neutro"] * len(closes)
+
+    for i in range(zscore_period, len(closes)):
+        # Distâncias do preço ao VWAP nos últimos N candles
+        dists = []
+        for j in range(i - zscore_period + 1, i + 1):
+            if vwap_vals[j] is not None and vwap_vals[j] > 0:
+                dists.append((closes[j] - vwap_vals[j]) / vwap_vals[j] * 100)
+
+        if len(dists) < 10:
+            continue
+
+        mean = sum(dists) / len(dists)
+        std  = (sum((d - mean) ** 2 for d in dists) / len(dists)) ** 0.5
+
+        if std > 0 and vwap_vals[i] is not None:
+            current_dist = (closes[i] - vwap_vals[i]) / vwap_vals[i] * 100
+            z = (current_dist - mean) / std
+            result_z[i] = round(z, 4)
+
+            # Classificação
+            if z > 2.5:
+                result_signal[i] = "muito_esticado_alta"    # evitar compra
+            elif z > 1.5:
+                result_signal[i] = "esticado_alta"           # cautela compra
+            elif z < -2.5:
+                result_signal[i] = "muito_esticado_baixa"   # possível reversão
+            elif z < -1.5:
+                result_signal[i] = "esticado_baixa"          # cautela venda
+            else:
+                result_signal[i] = "neutro"                  # zona segura
+
+    return {
+        "vwap":   vwap_vals,
+        "zscore": result_z,
+        "signal": result_signal,
+        # Score para integrar no RVP: -1 (bloqueado) a +1 (favorável)
+        "score":  [
+            max(-1.0, min(1.0, -z / 2.5))  # inverte: z alto → score negativo
+            for z in result_z
+        ],
+    }
+
+
 # ─────────────────────────────────────────────────────────────
 # GERADOR DE SINAIS COMBINADO
 # ─────────────────────────────────────────────────────────────
