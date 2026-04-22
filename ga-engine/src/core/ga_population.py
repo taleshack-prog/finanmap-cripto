@@ -240,12 +240,23 @@ def _compute_fitness_barbell(returns: list) -> dict:
     threshold_t = max(0.3, min(threshold_t, 0.85))  # clamp [0.3, 0.85]
     penalty = max(0.0, (threshold_t - sharpe) * 0.5) if sharpe < threshold_t and len(returns) > 10 else 0.0
 
-    fitness = (
-        0.40 * sharpe + 0.30 * sortino +
-        0.20 * min(pf, 5.0) +
-        0.10 * max(0, win_rate - 50) * 0.1
-        - penalty
-    )
+    # Fitness robusto: Sharpe × √TradeCount / MDD_norm
+    # Força GA a encontrar estratégias consistentes (TradeCount alto)
+    # e que protejam capital (MDD baixo) — não apenas sortudas
+    trade_count  = len(returns)
+    mdd_norm     = max(abs(max_dd) / 100, 0.01)  # normaliza MDD [0.01, 1.0]
+
+    # Componente base: Sharpe ponderado por consistência
+    sharpe_robust = sharpe * np.sqrt(trade_count) / (mdd_norm * 10)
+
+    # Componente qualidade: Sortino + Profit Factor
+    quality = 0.35 * sortino + 0.25 * min(pf, 5.0)
+
+    # Bônus win rate acima de 50%
+    wr_bonus = 0.10 * max(0, win_rate - 50) * 0.1
+
+    # Fitness final
+    fitness = sharpe_robust + quality + wr_bonus - penalty
     fitness = float(np.clip(fitness, -10.0, 100.0))
 
     return {
