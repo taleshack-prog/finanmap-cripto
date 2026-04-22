@@ -352,10 +352,10 @@ def _compute_fitness_barbell(
 
     # Fitness final — máximo 95 reservado para estratégias excepcionais
     fitness = score_base + quality + wr_bonus - penalty
-    # Clip dinâmico — retorno alto permite fitness mais alto
-    # ZEC +22.9% pode chegar em 85, ETH +5.9% máximo 60
-    max_fitness = min(95.0, 30.0 + total_return * 2.5)
-    fitness = float(np.clip(fitness, -10.0, max_fitness))
+    # Sem clip fixo — escala natural
+    # ZEC Sharpe=39 + ret=32% pode chegar em 200+
+    # ETH ret=5% fica em ~40
+    fitness = float(np.clip(fitness, -10.0, 500.0))
 
     return {
         "fitness":       round(fitness, 4),
