@@ -190,6 +190,190 @@ def volume_analysis(
     return {"obv": obv, "vol_ratio": vol_ratio, "vol_sma": vol_sma}
 
 
+def volume_delta(
+    volumes: list[float],
+    closes:  list[float],
+    highs:   list[float],
+    lows:    list[float],
+    period:  int = 5
+) -> dict:
+    """
+    Volume Delta — pressão real de compra vs venda.
+    Detecta desequilíbrio antes do preço mover.
+    Especialmente útil para ETH e SOL que têm movimentos bruscos.
+
+    Método: estima buy/sell volume pelo posicionamento do close
+    no range do candle (técnica de Wyckoff simplificada).
+    close perto do high → compradores dominam → delta positivo
+    close perto do low  → vendedores dominam → delta negativo
+    """
+    deltas = []
+    for i in range(len(closes)):
+        rng = highs[i] - lows[i]
+        if rng > 0:
+            # Proporção do close no range [0=low, 1=high]
+            close_pos = (closes[i] - lows[i]) / rng
+            # Buy volume estimado
+            buy_vol  = volumes[i] * close_pos
+            sell_vol = volumes[i] * (1 - close_pos)
+            deltas.append(buy_vol - sell_vol)
+        else:
+            deltas.append(0.0)
+
+    # Suaviza com SMA do período
+    delta_sma = sma(deltas, period)
+
+    # Normaliza para [-1, 1]
+    max_delta = max(abs(d) for d in deltas if d is not None) or 1
+    delta_norm = [
+        (d / max_delta) if d is not None else 0.0
+        for d in deltas
+    ]
+
+    # Score cumulativo dos últimos N candles
+    scores = []
+    for i in range(len(deltas)):
+        window = deltas[max(0, i - period + 1):i + 1]
+        cum = sum(window)
+        scores.append(cum / (max_delta * period) if max_delta > 0 else 0.0)
+
+    return {
+        "delta":      deltas,
+        "delta_norm": delta_norm,
+        "delta_sma":  delta_sma,
+        "score":      [max(-1.0, min(1.0, s)) for s in scores],
+    }
+
+
+def atr_normalized(
+    highs:   list[float],
+    lows:    list[float],
+    closes:  list[float],
+    period:  int = 14,
+    lookback: int = 50,
+) -> dict:
+    """
+    ATR Normalizado — volatilidade atual vs histórica.
+    Usado para:
+    1. Reduzir tamanho de posição quando volatilidade está alta
+    2. Evitar entrar quando SOL/ETH estão em regime de alta volatilidade
+    3. Calibrar stop loss dinamicamente
+
+    atr_ratio > 1.5 → volatilidade acima da média → cautela
+    atr_ratio < 0.7 → volatilidade abaixo da média → mercado consolidando
+    """
+    atr_values = atr(highs, lows, closes, period)
+
+    # Remove Nones
+    valid_atrs = [v for v in atr_values if v is not None]
+    if not valid_atrs:
+        return {
+            "atr":       atr_values,
+            "atr_pct":   [None] * len(closes),
+            "atr_ratio": [1.0] * len(closes),
+            "regime":    ["normal"] * len(closes),
+        }
+
+    # ATR como % do preço
+    atr_pct = []
+    for i, v in enumerate(atr_values):
+        if v is not None and closes[i] > 0:
+            atr_pct.append(v / closes[i] * 100)
+        else:
+            atr_pct.append(None)
+
+    # ATR ratio: atual vs média histórica
+    atr_ratio = []
+    for i in range(len(atr_pct)):
+        window = [x for x in atr_pct[max(0, i - lookback):i + 1] if x is not None]
+        if len(window) > 5:
+            avg = sum(window) / len(window)
+            ratio = atr_pct[i] / avg if avg > 0 and atr_pct[i] is not None else 1.0
+        else:
+            ratio = 1.0
+        atr_ratio.append(ratio)
+
+    # Regime de volatilidade
+    regime = []
+    for r in atr_ratio:
+        if r > 1.8:
+            regime.append("muito_alta")
+        elif r > 1.3:
+            regime.append("alta")
+        elif r < 0.6:
+            regime.append("muito_baixa")
+        elif r < 0.8:
+            regime.append("baixa")
+        else:
+            regime.append("normal")
+
+    return {
+        "atr":       atr_values,
+        "atr_pct":   atr_pct,
+        "atr_ratio": atr_ratio,
+        "regime":    regime,
+    }
+
+
+def momentum_candles(
+    closes: list[float],
+    period: int = 3,
+) -> list[float]:
+    """
+    Momentum de N candles — tendência de curtíssimo prazo.
+    Mais responsivo que MACD para SOL e ETH.
+    Retorna variação percentual acumulada dos últimos N candles.
+    """
+    result = [0.0] * len(closes)
+    for i in range(period, len(closes)):
+        if closes[i - period] > 0:
+            result[i] = (closes[i] - closes[i - period]) / closes[i - period]
+    return result
+
+
+def rvp_score(
+    win_rate:       float,
+    take_profit_pct: float,
+    stop_loss_pct:  float,
+    vol_delta_score: float = 0.0,
+    atr_ratio:      float  = 1.0,
+) -> dict:
+    """
+    RVP — Risco/Valor/Probabilidade.
+    Integra Kelly + volume delta + ATR normalizado.
+
+    rvp > 1.5 → entrada favorável
+    rvp 1.0-1.5 → entrada marginal
+    rvp < 1.0 → evitar
+
+    Ajustes:
+    - vol_delta positivo → aumenta probabilidade estimada
+    - atr_ratio alto → reduz RVP (mais risco)
+    """
+    if stop_loss_pct <= 0:
+        return {"rvp": 0.0, "approved": False, "reason": "stop_loss_zero"}
+
+    # Ajusta win rate com volume delta
+    adjusted_wr = min(0.95, win_rate + vol_delta_score * 0.1)
+
+    # Valor esperado básico
+    ev = (adjusted_wr * take_profit_pct) - ((1 - adjusted_wr) * stop_loss_pct)
+
+    # RVP = valor esperado / risco, ajustado pela volatilidade
+    rvp = (ev / stop_loss_pct) / max(atr_ratio, 0.5)
+
+    approved = rvp > 1.0
+
+    return {
+        "rvp":         round(rvp, 4),
+        "ev":          round(ev, 4),
+        "adjusted_wr": round(adjusted_wr, 4),
+        "atr_ratio":   round(atr_ratio, 4),
+        "approved":    approved,
+        "reason":      "ok" if approved else f"rvp_baixo_{rvp:.2f}",
+    }
+
+
 # ─────────────────────────────────────────────────────────────
 # GERADOR DE SINAIS COMBINADO
 # ─────────────────────────────────────────────────────────────

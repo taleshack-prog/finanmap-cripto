@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 
 from src.services.data_service import get_ohlcv, get_ticker, get_order_book
 from src.services.technical_analysis import generate_technical_signals
+from src.services.technical_analysis import volume_delta, atr_normalized, rvp_score
 from src.services.order_executor import OrderExecutor, OrderResult
 from src.services.trade_persistence import save_trade_open, save_trade_close
 
@@ -294,6 +295,54 @@ class TradingBot:
                 return
         except Exception:
             pass
+
+        # ── RVP — Risco/Valor/Probabilidade ──────────────────
+        # Só calcula se há sinal técnico de BUY e posição neutra
+        if tech_direction == "BUY" and self.state.position == "none":
+            try:
+                ohlcv    = get_ohlcv(
+                    symbol=self.config.symbol, timeframe=self.config.timeframe,
+                    limit=50, exchange_name=self.config.exchange,
+                    api_key=self.config.api_key, secret=self.config.api_secret,
+                )
+                highs_  = ohlcv.get("highs",  ohlcv["closes"])
+                lows_   = ohlcv.get("lows",   ohlcv["closes"])
+                vols_   = ohlcv.get("volumes", [1.0] * len(ohlcv["closes"]))
+                closes_ = ohlcv["closes"]
+
+                # Volume delta — pressão real
+                vd      = volume_delta(vols_, closes_, highs_, lows_, period=5)
+                vd_score = vd["score"][-1] if vd["score"] else 0.0
+
+                # ATR normalizado — regime de volatilidade
+                atr_n   = atr_normalized(highs_, lows_, closes_, period=14)
+                atr_r   = atr_n["atr_ratio"][-1] if atr_n["atr_ratio"] else 1.0
+                regime  = atr_n["regime"][-1] if atr_n["regime"] else "normal"
+
+                # RVP
+                win_rate_est = self.state.win_rate / 100 if self.state.total_trades > 3 else 0.55
+                rvp = rvp_score(
+                    win_rate       = win_rate_est,
+                    take_profit_pct = self.config.take_profit_pct,
+                    stop_loss_pct  = self.config.stop_loss_pct,
+                    vol_delta_score = vd_score,
+                    atr_ratio      = atr_r,
+                )
+
+                self._log(
+                    f"RVP | score={rvp['rvp']:.3f} | EV={rvp['ev']:.3f} | "
+                    f"VolDelta={vd_score:+.3f} | ATR_ratio={atr_r:.2f} | regime={regime}"
+                )
+
+                if not rvp["approved"] and self.state.total_trades > 3:
+                    self._log(
+                        f"RVP REPROVADO ({rvp['reason']}) — entrada bloqueada",
+                        "WARNING"
+                    )
+                    return
+
+            except Exception as e:
+                self._log(f"RVP erro (não bloqueia): {e}", "WARNING")
 
         # 6. Decisão de entrada — técnica + fluxo (fluxo SÓ na entrada)
         if tech_direction == "BUY" and self.state.position == "none":
