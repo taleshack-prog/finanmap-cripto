@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from src.services.data_service import get_ohlcv, get_ticker, get_order_book
 from src.services.technical_analysis import generate_technical_signals
 from src.services.technical_analysis import volume_delta, atr_normalized, rvp_score, zscore_vwap
+from src.services.cvd_service import get_cvd_real
 from src.services.order_executor import OrderExecutor, OrderResult
 from src.services.trade_persistence import save_trade_open, save_trade_close
 
@@ -343,6 +344,41 @@ class TradingBot:
                     f"VWAP=${zs['vwap'][-1]:,.2f if zs['vwap'][-1] else 0:.2f}"
                 )
 
+                # CVD Real — fluxo real de compra/venda
+                # Especialmente importante para ETH e SOL
+                try:
+                    cvd = get_cvd_real(
+                        symbol        = self.config.symbol,
+                        exchange_name = self.config.exchange,
+                        api_key       = self.config.api_key,
+                        secret        = self.config.api_secret,
+                        limit         = 200,
+                        window_min    = 5,
+                    )
+                    cvd_score  = cvd["score"]
+                    cvd_signal = cvd["signal"]
+
+                    self._log(
+                        f"CVD Real | score={cvd_score:+.3f} | signal={cvd_signal} | "
+                        f"buy={cvd['buy_volume']:.2f} sell={cvd['sell_volume']:.2f} | "
+                        f"trades={cvd['trades_count']}"
+                    )
+
+                    # Bloqueia se CVD bearish E Z-Score neutro/alto
+                    # (dupla confirmação de venda agressiva)
+                    if cvd_signal == "bearish" and z_score > 0.5:
+                        self._log(
+                            f"CVD BLOQUEADO | CVD bearish ({cvd_score:+.3f}) + "
+                            f"Z-Score={z_score:.2f} — venda agressiva confirmada",
+                            "WARNING"
+                        )
+                        return
+
+                except Exception as e:
+                    self._log(f"CVD erro (não bloqueia): {e}", "WARNING")
+                    cvd_score  = 0.0
+                    cvd_signal = "neutro"
+
                 # RVP
                 win_rate_est = self.state.win_rate / 100 if self.state.total_trades > 3 else 0.55
                 rvp = rvp_score(
@@ -355,8 +391,8 @@ class TradingBot:
 
                 self._log(
                     f"RVP | score={rvp['rvp']:.3f} | EV={rvp['ev']:.3f} | "
-                    f"VolDelta={vd_score:+.3f} | ATR_ratio={atr_r:.2f} | "
-                    f"Z={z_score:.2f} | regime={regime}"
+                    f"VolDelta={vd_score:+.3f} | ATR={atr_r:.2f} | "
+                    f"Z={z_score:.2f} | CVD={cvd_score:+.3f} | regime={regime}"
                 )
 
                 if not rvp["approved"] and self.state.total_trades > 3:
