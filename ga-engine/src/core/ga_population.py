@@ -278,19 +278,29 @@ def _compute_fitness_barbell(
             "win_rate": win_rate, "max_dd": max_dd, "total_return": total_return,
         }
 
-    # Retorno negativo = fitness negativo imediato
+    # ── Precisão RVP por zona ATR (código externo integrado) ─────────────────
+    precision_rvp = 0.5  # padrão neutro se não tiver OHLCV
+    atr_mult = ATR_MULT_BY_ASSET.get(symbol, ATR_MULT_DEFAULT) if symbol else ATR_MULT_DEFAULT
+
+    # Retorno negativo OU abaixo de 3% = fitness penalizado fortemente
     if total_return <= 0:
         return {
-            "fitness": max(-5.0, total_return / 10),
+            "fitness": max(-5.0, total_return / 5.0),
             "disqualified": False,
             "sharpe": round(sharpe, 4), "sortino": round(sortino, 4),
             "profit_factor": round(pf, 4), "win_rate": round(win_rate, 1),
             "max_dd": round(max_dd, 2), "total_return": round(total_return, 2),
+            "precision_rvp": 0.0, "atr_mult": atr_mult,
         }
-
-    # ── Precisão RVP por zona ATR (código externo integrado) ─────────────────
-    precision_rvp = 0.5  # padrão neutro se não tiver OHLCV
-    atr_mult = ATR_MULT_BY_ASSET.get(symbol, ATR_MULT_DEFAULT) if symbol else ATR_MULT_DEFAULT
+    if total_return < 3.0:
+        return {
+            "fitness": total_return - 3.0,  # negativo se <3%
+            "disqualified": False,
+            "sharpe": round(sharpe, 4), "sortino": round(sortino, 4),
+            "profit_factor": round(pf, 4), "win_rate": round(win_rate, 1),
+            "max_dd": round(max_dd, 2), "total_return": round(total_return, 2),
+            "precision_rvp": round(precision_rvp, 4), "atr_mult": atr_mult,
+        }
 
     if closes and highs and lows and len(closes) >= 20:
         try:
