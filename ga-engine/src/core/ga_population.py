@@ -199,84 +199,162 @@ def _backtest_vectorized(chromosome: Chromosome, closes: np.ndarray) -> dict:
     return {"returns": returns}
 
 
-# ─── FITNESS BARBELL (TA PURO) ──────────────────────────────
+# ─── FITNESS BARBELL (INTEGRADO) ────────────────────────────
 
-def _compute_fitness_barbell(returns: list) -> dict:
+# Multiplicador ATR por ativo — coeficiente de Hurst implícito
+ATR_MULT_BY_ASSET = {
+    "BTC/USDT": 1.0,   # mais estável — bandas menores
+    "ETH/USDT": 1.6,   # mais volátil — bandas maiores
+    "SOL/USDT": 1.8,   # alta volatilidade — bandas largas
+    "XRP/USDT": 1.3,   # moderado
+    "SUI/USDT": 1.7,   # altcoin volátil
+    "ADA/USDT": 1.4,   # moderado
+    "ZEC/USDT": 1.5,   # liquidez menor
+    "BNB/USDT": 1.2,   # estável
+}
+ATR_MULT_DEFAULT = 1.5  # padrão para pares não mapeados
+
+
+def _calculate_atr_series(highs: list, lows: list, closes: list, period: int = 14) -> list:
+    """ATR série completa para uso no fitness."""
+    if len(closes) < period + 1:
+        return [0.0] * len(closes)
+    true_ranges = []
+    for i in range(1, len(closes)):
+        tr = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i] - closes[i - 1])
+        )
+        true_ranges.append(tr)
+    atr_vals = [0.0] * period
+    atr_vals.append(sum(true_ranges[:period]) / period)
+    for i in range(period, len(true_ranges)):
+        atr_vals.append((atr_vals[-1] * (period - 1) + true_ranges[i]) / period)
+    return atr_vals
+
+
+def _compute_fitness_barbell(
+    returns: list,
+    highs:   list = None,
+    lows:    list = None,
+    closes:  list = None,
+    symbol:  str  = None,
+) -> dict:
+    """
+    Fitness integrado:
+    - Sharpe × √TradeCount × Retorno / MDD  (nosso barbell)
+    - PrecisãoRVP — precisão nas zonas de absorção ATR (código externo)
+    - Multiplicador ATR por ativo (coeficiente de Hurst implícito)
+    - Penaliza retorno negativo e MDD alto
+    """
     if len(returns) < 3:
         return {"fitness": -1.0, "disqualified": True, "reason": "poucos_trades"}
 
     arr = np.array(returns)
-
     win_rate     = float(np.sum(arr > 0) / len(arr) * 100)
     total_return = float((np.prod(1 + arr) - 1) * 100)
     max_dd       = float(np.min(np.minimum.accumulate(1 + arr) - 1) * 100)
+    mean_r       = float(np.mean(arr))
+    std_r        = float(np.std(arr, ddof=1))
+    sharpe       = float(mean_r / std_r * np.sqrt(8760)) if std_r > 1e-9 else 0.0
+    down         = arr[arr < 0]
+    std_d        = float(np.std(down, ddof=1)) if len(down) > 1 else 1e-9
+    sortino      = float(mean_r / std_d * np.sqrt(8760)) if std_d > 1e-9 else 0.0
+    gains        = float(arr[arr > 0].sum())
+    losses       = float(abs(arr[arr < 0].sum()))
+    pf           = min(gains / losses, 5.0) if losses > 1e-9 else min(gains * 10, 5.0)
 
-    mean_r = float(np.mean(arr))
-    std_r  = float(np.std(arr, ddof=1))
-    sharpe = float(mean_r / std_r * np.sqrt(8760)) if std_r > 1e-9 else 0.0
-
-    down    = arr[arr < 0]
-    std_d   = float(np.std(down, ddof=1)) if len(down) > 1 else 1e-9
-    sortino = float(mean_r / std_d * np.sqrt(8760)) if std_d > 1e-9 else 0.0
-
-    gains  = float(arr[arr > 0].sum())
-    losses = float(abs(arr[arr < 0].sum()))
-    pf     = min(gains / losses, 5.0) if losses > 1e-9 else min(gains * 10, 5.0)
-
-    # Sanitiza — garante que nenhum valor é inf ou nan
+    # Sanitiza
     sharpe  = 0.0 if not np.isfinite(sharpe)  else sharpe
     sortino = 0.0 if not np.isfinite(sortino) else sortino
     pf      = 5.0 if not np.isfinite(pf)      else pf
 
+    # MDD cap
     if max_dd < MDD_CAP * 100:
-        return {"fitness": -2.0, "disqualified": True, "reason": f"mdd_excedido",
-                "sharpe": sharpe, "sortino": sortino, "profit_factor": pf,
-                "win_rate": win_rate, "max_dd": max_dd, "total_return": total_return}
-
-    # Threshold dinâmico baseado em Sharpe e MDD
-    sharpe_14d = sharpe  # aproximação com dados disponíveis
-    mdd_7d     = abs(max_dd) / 100
-    threshold_t = 0.55 + 0.15 * sharpe_14d - 0.08 * mdd_7d
-    threshold_t = max(0.3, min(threshold_t, 0.85))  # clamp [0.3, 0.85]
-    penalty = max(0.0, (threshold_t - sharpe) * 0.5) if sharpe < threshold_t and len(returns) > 10 else 0.0
-
-    # Fitness diferenciado — não satura em 100
-    # Usa escala logarítmica para separar estratégias
-    trade_count = len(returns)
-    mdd_norm    = max(abs(max_dd) / 100, 0.01)
-
-    # Retorno mínimo de 3% para fitness positivo
-    if total_return < 3.0 and trade_count < 20:
-        fitness = max(-1.0, total_return / 3.0 - 1.0)
-        fitness = float(np.clip(fitness, -10.0, 100.0))
         return {
-            "fitness": round(fitness, 4), "disqualified": False,
+            "fitness": -2.0, "disqualified": True, "reason": "mdd_excedido",
+            "sharpe": sharpe, "sortino": sortino, "profit_factor": pf,
+            "win_rate": win_rate, "max_dd": max_dd, "total_return": total_return,
+        }
+
+    # Retorno negativo = fitness negativo imediato
+    if total_return <= 0:
+        return {
+            "fitness": max(-5.0, total_return / 10),
+            "disqualified": False,
             "sharpe": round(sharpe, 4), "sortino": round(sortino, 4),
             "profit_factor": round(pf, 4), "win_rate": round(win_rate, 1),
             "max_dd": round(max_dd, 2), "total_return": round(total_return, 2),
         }
 
-    # Score base: Sharpe × √TradeCount × retorno
-    score_base = sharpe * np.sqrt(trade_count) * (total_return / 10)
+    # ── Precisão RVP por zona ATR (código externo integrado) ─────────────────
+    precision_rvp = 0.5  # padrão neutro se não tiver OHLCV
+    atr_mult = ATR_MULT_BY_ASSET.get(symbol, ATR_MULT_DEFAULT) if symbol else ATR_MULT_DEFAULT
 
-    # Penaliza MDD alto
-    score_base = score_base / (mdd_norm * 10)
+    if closes and highs and lows and len(closes) >= 20:
+        try:
+            atr_vals = _calculate_atr_series(highs, lows, closes, period=14)
+            # EMA 20 para zona de referência
+            ema20 = [closes[0]]
+            alpha = 2 / (20 + 1)
+            for c in closes[1:]:
+                ema20.append(ema20[-1] * (1 - alpha) + c * alpha)
 
-    # Qualidade: Sortino + PF
-    quality = 0.35 * sortino + 0.25 * min(pf, 5.0)
+            # Identifica zonas RVP (preço próximo da EMA20 ± ATR × mult)
+            in_rvp_zone = []
+            for i in range(len(closes)):
+                atr_i = atr_vals[i] if i < len(atr_vals) else 0
+                dist  = abs(closes[i] - ema20[i])
+                in_rvp_zone.append(dist <= atr_i * atr_mult)
+
+            # Precisão dos trades dentro da zona RVP
+            rvp_returns = [r for r, z in zip(returns, in_rvp_zone[:len(returns)]) if z]
+            if len(rvp_returns) >= 3:
+                precision_rvp = sum(1 for r in rvp_returns if r > 0) / len(rvp_returns)
+            else:
+                precision_rvp = win_rate / 100  # fallback para win rate geral
+
+        except Exception:
+            precision_rvp = win_rate / 100
+
+    # ── Threshold dinâmico ────────────────────────────────────────────────────
+    mdd_7d      = abs(max_dd) / 100
+    threshold_t = max(0.3, min(0.55 + 0.15 * sharpe - 0.08 * mdd_7d, 0.85))
+    penalty     = max(0.0, (threshold_t - sharpe) * 0.5) if sharpe < threshold_t and len(returns) > 10 else 0.0
+
+    # ── Fitness integrado ─────────────────────────────────────────────────────
+    trade_count = len(returns)
+    mdd_norm    = max(abs(max_dd) / 100, 0.01)
+
+    # Base: Sharpe × √TradeCount × retorno / MDD (nosso barbell)
+    score_base = sharpe * np.sqrt(trade_count) * (total_return / 10) / (mdd_norm * 10)
+
+    # Qualidade: Sortino + PF + precisão RVP (código externo)
+    quality = (
+        0.30 * sortino +
+        0.25 * min(pf, 5.0) +
+        0.20 * precision_rvp * 10  # normaliza precisão para escala similar
+    )
 
     # Win rate bônus
     wr_bonus = max(0, win_rate - 50) * 0.05
 
-    # Fitness sem clip em 100 — deixa escala natural
+    # Fitness final — máximo 95 reservado para estratégias excepcionais
     fitness = score_base + quality + wr_bonus - penalty
-    fitness = float(np.clip(fitness, -10.0, 95.0))  # máximo 95 — 100 reservado
+    fitness = float(np.clip(fitness, -10.0, 95.0))
 
     return {
-        "fitness": round(fitness, 4), "disqualified": False,
-        "sharpe": round(sharpe, 4), "sortino": round(sortino, 4),
-        "profit_factor": round(pf, 4), "win_rate": round(win_rate, 1),
-        "max_dd": round(max_dd, 2), "total_return": round(total_return, 2),
+        "fitness":       round(fitness, 4),
+        "disqualified":  False,
+        "sharpe":        round(sharpe, 4),
+        "sortino":       round(sortino, 4),
+        "profit_factor": round(pf, 4),
+        "win_rate":      round(win_rate, 1),
+        "max_dd":        round(max_dd, 2),
+        "total_return":  round(total_return, 2),
+        "precision_rvp": round(precision_rvp, 4),
+        "atr_mult":      atr_mult,
     }
 
 
@@ -325,6 +403,8 @@ class GAPopulation:
             secret        = self.api_secret,
         )
         self.closes_np = np.array(ohlcv["closes"], dtype=float)
+        self.highs_np  = np.array(ohlcv.get("highs",  ohlcv["closes"]), dtype=float)
+        self.lows_np   = np.array(ohlcv.get("lows",   ohlcv["closes"]), dtype=float)
         logger.info(f"Dados: {len(self.closes_np)} candles | ${self.closes_np.min():,.0f}–${self.closes_np.max():,.0f}")
 
     def _new_individual(self, gen: int, chrom: Optional[Chromosome] = None) -> Individual:
@@ -335,7 +415,13 @@ class GAPopulation:
     def _evaluate(self, ind: Individual) -> Individual:
         try:
             result  = _backtest_vectorized(ind.chromosome, self.closes_np)
-            metrics = _compute_fitness_barbell(result["returns"])
+            metrics = _compute_fitness_barbell(
+                returns = result["returns"],
+                highs   = self.highs_np.tolist(),
+                lows    = self.lows_np.tolist(),
+                closes  = self.closes_np.tolist(),
+                symbol  = self.symbol,
+            )
 
             ind.fitness       = metrics["fitness"]
             ind.disqualified  = metrics.get("disqualified", False)
