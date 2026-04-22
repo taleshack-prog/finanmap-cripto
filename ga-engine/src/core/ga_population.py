@@ -240,26 +240,37 @@ def _compute_fitness_barbell(returns: list) -> dict:
     threshold_t = max(0.3, min(threshold_t, 0.85))  # clamp [0.3, 0.85]
     penalty = max(0.0, (threshold_t - sharpe) * 0.5) if sharpe < threshold_t and len(returns) > 10 else 0.0
 
-    # Fitness robusto: Sharpe × √TradeCount / MDD_norm
-    # Inclui retorno mínimo para evitar saturação com retornos baixos
-    trade_count  = len(returns)
-    mdd_norm     = max(abs(max_dd) / 100, 0.01)
+    # Fitness diferenciado — não satura em 100
+    # Usa escala logarítmica para separar estratégias
+    trade_count = len(returns)
+    mdd_norm    = max(abs(max_dd) / 100, 0.01)
 
-    # Penaliza retornos muito baixos — abaixo de 3% não vale
-    return_factor = max(0.1, min(total_return / 10, 2.0))
+    # Retorno mínimo de 3% para fitness positivo
+    if total_return < 3.0 and trade_count < 20:
+        fitness = max(-1.0, total_return / 3.0 - 1.0)
+        fitness = float(np.clip(fitness, -10.0, 100.0))
+        return {
+            "fitness": round(fitness, 4), "disqualified": False,
+            "sharpe": round(sharpe, 4), "sortino": round(sortino, 4),
+            "profit_factor": round(pf, 4), "win_rate": round(win_rate, 1),
+            "max_dd": round(max_dd, 2), "total_return": round(total_return, 2),
+        }
 
-    # Componente base: Sharpe ponderado por consistência e retorno
-    sharpe_robust = sharpe * np.sqrt(trade_count) / (mdd_norm * 10) * return_factor
+    # Score base: Sharpe × √TradeCount × retorno
+    score_base = sharpe * np.sqrt(trade_count) * (total_return / 10)
 
-    # Componente qualidade: Sortino + Profit Factor
+    # Penaliza MDD alto
+    score_base = score_base / (mdd_norm * 10)
+
+    # Qualidade: Sortino + PF
     quality = 0.35 * sortino + 0.25 * min(pf, 5.0)
 
-    # Bônus win rate acima de 50%
-    wr_bonus = 0.10 * max(0, win_rate - 50) * 0.1
+    # Win rate bônus
+    wr_bonus = max(0, win_rate - 50) * 0.05
 
-    # Fitness final
-    fitness = sharpe_robust + quality + wr_bonus - penalty
-    fitness = float(np.clip(fitness, -10.0, 100.0))
+    # Fitness sem clip em 100 — deixa escala natural
+    fitness = score_base + quality + wr_bonus - penalty
+    fitness = float(np.clip(fitness, -10.0, 95.0))  # máximo 95 — 100 reservado
 
     return {
         "fitness": round(fitness, 4), "disqualified": False,
