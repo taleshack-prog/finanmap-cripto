@@ -282,6 +282,19 @@ class TradingBot:
                 await self._close_position("TAKE_PROFIT", price)
                 return
 
+        # Limite global de posições simultâneas
+        max_positions = 3
+        # Conta posições via USDT livre (proxy simples)
+        try:
+            balance = self.executor.exchange.fetch_balance()
+            usdt_free = float(balance.get('free', {}).get('USDT', 0) or 0)
+            usdt_total = float(balance.get('total', {}).get('USDT', 0) or 0)
+            if usdt_free < 5.0:
+                self._log(f"USDT livre insuficiente: ${usdt_free:.2f} — aguardando", "WARNING")
+                return
+        except Exception:
+            pass
+
         # 6. Decisão de entrada — técnica + fluxo (fluxo SÓ na entrada)
         if tech_direction == "BUY" and self.state.position == "none":
             flow_approved = True
@@ -368,7 +381,19 @@ class TradingBot:
         onchain_stress = getattr(self, '_onchain_stress', 0.0)
         kelly_adjusted = half_kelly * (1 - 0.3 * onchain_stress)
 
-        size_usd  = self.config.capital * kelly_adjusted
+        # Verifica saldo USDT real antes de abrir
+        try:
+            balance = self.executor.exchange.fetch_balance()
+            usdt_free = float(balance.get('free', {}).get('USDT', 0) or 0)
+            max_size  = usdt_free * 0.90  # usa no máximo 90% do USDT livre
+            size_usd  = min(self.config.capital * kelly_adjusted, max_size)
+            if size_usd < 5.0:
+                self._log(f"USDT insuficiente: ${usdt_free:.2f} livre — mínimo $5", "WARNING")
+                return
+            self._log(f"USDT livre: ${usdt_free:.2f} | Usando: ${size_usd:.2f}")
+        except Exception as e:
+            size_usd = self.config.capital * kelly_adjusted
+            self._log(f"Erro ao verificar USDT: {e} — usando capital configurado", "WARNING")
         quantity  = round(size_usd / price, 6)
         self._log(
             f"Kelly sizing | WR={win_rate:.0%} R:R={rr_ratio:.1f} "
