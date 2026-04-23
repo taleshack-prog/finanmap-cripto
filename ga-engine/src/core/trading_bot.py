@@ -529,13 +529,10 @@ class TradingBot:
             self.open_trade_id = await save_trade_open(
                 user_id=self.config.user_id,
                 strategy_id=self.config.strategy_id,
-                exchange_name=self.config.exchange,
-                par_trading=self.config.symbol,
-                tipo=side,
-                quantidade=quantity,
-                preco_entrada=self.state.entry_price,
+                symbol=self.config.symbol,
+                quantity=quantity,
+                entry_price=self.state.entry_price,
                 bot_id=self.config.bot_id,
-                motivo=f"SIGNAL_{side.upper()}"
             )
             self._log(f"Posição aberta | Exec: ${self.state.entry_price:,.2f} | ID: {result.order_id}")
         else:
@@ -568,10 +565,11 @@ class TradingBot:
 
             await save_trade_close(
                 trade_id=self.open_trade_id,
-                preco_saida=exit_price,
-                lucro=pnl_usd,
-                lucro_percentual=pnl_pct,
-                motivo=reason
+                user_id=self.config.user_id,
+                exit_price=exit_price,
+                pnl_usd=pnl_usd,
+                pnl_pct=pnl_pct,
+                reason=reason,
             )
             self.open_trade_id = None
 
