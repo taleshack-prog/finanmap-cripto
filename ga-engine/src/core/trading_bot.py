@@ -115,11 +115,59 @@ class TradingBot:
             self._log("Robô já está rodando", "WARNING")
             return
         self.state.is_running = True
+        # Recupera estado de posições abertas ao reiniciar
+        await self._recover_state()
         self._log(
             f"Robô v2 iniciado | {self.config.symbol} {self.config.timeframe} | "
             f"dry_run={self.config.dry_run} | flow_filter={self.config.use_flow_filter}"
         )
         self._task = asyncio.create_task(self._loop())
+
+    async def _recover_state(self):
+        """
+        State recovery via fetch_balance + fetch_orders.
+        Quando o bot reinicia, verifica se já tem posição aberta na Binance.
+        Usa saldo real do ativo para detectar posição órfã.
+        """
+        if self.config.dry_run:
+            return
+        try:
+            base = self.config.symbol.split("/")[0]  # ex: ZEC de ZEC/USDT
+            balance = self.executor.exchange.fetch_balance()
+            free    = float(balance.get("free",  {}).get(base, 0) or 0)
+            total   = float(balance.get("total", {}).get(base, 0) or 0)
+
+            # Busca preço atual
+            ticker = self.executor.exchange.fetch_ticker(self.config.symbol)
+            price  = float(ticker.get("last") or ticker.get("close") or 0)
+            if price <= 0:
+                return
+
+            # Valor do saldo em USDT
+            value_usdt = total * price
+
+            # Só considera posição se valor > $3 (evita pó)
+            min_value = 3.0
+            if value_usdt < min_value:
+                return
+
+            # Calcula quantidade mínima esperada para uma posição real
+            # (pelo menos 1% do capital configurado)
+            min_qty = (self.config.capital * 0.01) / price
+
+            if total > min_qty:
+                # Tem saldo real — recupera estado
+                self.state.position      = "long"
+                self.state.entry_price   = price  # usa preço atual como referência
+                self.state.position_size = total
+                self.state.unrealized_pnl = 0.0
+                self._log(
+                    f"State recovery | {base}: {total:.6f} "
+                    f"≈ ${value_usdt:.2f} | Assumindo LONG @ ${price:,.2f}",
+                    "WARNING"
+                )
+        except Exception as e:
+            self._log(f"State recovery erro (ignorado): {e}", "WARNING")
 
     async def stop(self):
         self.state.is_running = False
