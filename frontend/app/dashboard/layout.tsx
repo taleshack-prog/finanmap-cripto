@@ -1,4 +1,6 @@
 'use client'
+import { useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 
@@ -14,6 +16,27 @@ const NAV = [
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
+  const router = useRouter()
+
+  useEffect(() => {
+    const token = localStorage.getItem('finanmap_token')
+    if (!token) {
+      router.push('/login')
+      return
+    }
+    // Verifica se token não está expirado
+    try {
+      const payload = JSON.parse(atob(token.split('.')[1]))
+      if (payload.exp * 1000 < Date.now()) {
+        localStorage.removeItem('finanmap_token')
+        localStorage.removeItem('finanmap_user')
+        router.push('/login')
+      }
+    } catch {
+      localStorage.removeItem('finanmap_token')
+      router.push('/login')
+    }
+  }, [router])
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: '#020010', fontFamily: '"Courier New", monospace', color: '#fff' }}>
@@ -84,7 +107,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           display: 'flex', justifyContent: 'space-between', alignItems: 'center',
         }}>
           <span style={{ fontSize: '10px', letterSpacing: '4px', color: 'rgba(124,58,255,0.6)' }}>
-            {NAV.find(n => n.pathname === pathname)?.label || 'DASHBOARD'}
+            {NAV.find(n => n.href === pathname)?.label || 'DASHBOARD'}
           </span>
           <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
             <span style={{ fontSize: '9px', letterSpacing: '2px', color: 'rgba(255,255,255,0.2)' }}>
