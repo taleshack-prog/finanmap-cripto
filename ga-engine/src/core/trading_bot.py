@@ -590,6 +590,20 @@ class TradingBot:
         if self.state.position == "none":
             return
 
+        # Verifica valor mínimo da ordem (Binance mínimo $5)
+        if price:
+            order_value = self.state.position_size * price
+            if order_value < 5.0:
+                self._log(
+                    f"Posição muito pequena para fechar: ${order_value:.2f} < $5.00 mínimo Binance — descartando",
+                    "WARNING"
+                )
+                self.state.position      = "none"
+                self.state.entry_price   = 0.0
+                self.state.position_size = 0.0
+                self.state.unrealized_pnl = 0.0
+                return
+
         result = await self.executor.place_order(
             symbol   = self.config.symbol,
             side     = "sell" if self.state.position == "long" else "buy",
