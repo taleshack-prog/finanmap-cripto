@@ -53,13 +53,15 @@ export default function MonitorPage() {
 
   const fetchBots = useCallback(async () => {
     try {
-      const r = await fetch(`${GA}/bot/list`)
+      const controller = new AbortController()
+      setTimeout(() => controller.abort(), 8000)
+      const r = await fetch(`${GA}/bot/list`, { signal: controller.signal })
       const d = await r.json()
       const botList: BotStatus[] = d.bots || []
       setBots(botList)
 
       // Busca advise para cada símbolo único
-      const symbols = [...new Set(botList.map(b => b.symbol.replace('/USDT','').replace('/BTC','')))]
+      const symbols = Array.from(new Set(botList.map(b => b.symbol.replace('/USDT','').replace('/BTC',''))))
       const adviseMap: Record<string, Advise> = {}
       await Promise.allSettled(
         symbols.map(async sym => {
@@ -275,7 +277,7 @@ export default function MonitorPage() {
 
                           <div style={{ marginTop: '0.75rem', padding: '0.5rem', background: 'rgba(255,255,255,0.02)', borderRadius: '4px', fontSize: '8px', color: 'rgba(255,255,255,0.2)', lineHeight: 1.6 }}>
                             ℹ {adv.note}<br/>
-                            Cache: {Math.round(adv.cache_ttl / 60)}min · Atualizado: {new Date(adv.timestamp * 1000).toLocaleTimeString('pt-BR')}
+                            Atualizado: {new Date(adv.timestamp * 1000).toLocaleTimeString('pt-BR')}
                           </div>
                         </>
                       ) : (
