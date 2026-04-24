@@ -51,7 +51,7 @@ def categorize(symbol: str) -> str:
 
 # Cache global
 _portfolio_cache: dict = {}
-PORTFOLIO_TTL = 30  # segundos
+PORTFOLIO_TTL = 60  # segundos
 
 def get_binance_balances(api_key: str, secret: str) -> list:
     """
@@ -67,9 +67,14 @@ def get_binance_balances(api_key: str, secret: str) -> list:
 
     try:
         exchange = ccxt.binance({
-            "apiKey": api_key,
-            "secret": secret,
+            "apiKey":          api_key,
+            "secret":          secret,
             "enableRateLimit": True,
+            "timeout":         10000,   # 10 segundos máximo
+            "options": {
+                "defaultType": "spot",
+                "fetchTickerQuote": False,
+            }
         })
 
         balance = exchange.fetch_balance()
