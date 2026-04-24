@@ -54,8 +54,9 @@ BINANCE_KEY    = os.getenv("BINANCE_API_KEY", "")
 BINANCE_SECRET = os.getenv("BINANCE_SECRET",  "")
 ETHERSCAN_KEY  = os.getenv("ETHERSCAN_API_KEY", "")
 
-active_bots: Dict[str, TradingBot] = {}
-ga_jobs:     Dict[str, dict]       = {}
+active_bots:   Dict[str, TradingBot] = {}
+ga_jobs:       Dict[str, dict]       = {}
+_simple_cache: dict                  = {}
 
 
 # ─── SCHEMAS ────────────────────────────────────────────────
@@ -287,7 +288,11 @@ async def analyze_full(
 # ─── ANÁLISE QUANTITATIVA ───────────────────────────────────
 
 @app.get("/analyze/quantitative")
-async def analyze_quant_live(symbol: str = Query("BTC/USDT"), timeframe: str = Query("1h"), limit: int = Query(500), exchange: str = Query("binance")):
+async def analyze_quant_live(symbol: str = Query("BTC/USDT"), timeframe: str = Query("1h"), limit: int = Query(100), exchange: str = Query("binance")):
+    cache_key = f"quant_{symbol}_{timeframe}_{limit}"
+    cached = _simple_cache.get(cache_key)
+    if cached and time.time() - cached["ts"] < 60:
+        return cached["data"]
     try:
         ohlcv = get_ohlcv(symbol, timeframe, limit, exchange, BINANCE_KEY, BINANCE_SECRET)
         btc_closes = None
@@ -295,7 +300,9 @@ async def analyze_quant_live(symbol: str = Query("BTC/USDT"), timeframe: str = Q
             btc = get_ohlcv("BTC/USDT", timeframe, limit, exchange, BINANCE_KEY, BINANCE_SECRET)
             btc_closes = btc["closes"]
         result = quantitative_score(ohlcv["closes"], btc_closes)
-        return {"symbol": symbol, "candles": len(ohlcv["closes"]), "latest_price": ohlcv["closes"][-1], "quantitative": result, "timestamp": int(time.time())}
+        data = {"symbol": symbol, "candles": len(ohlcv["closes"]), "latest_price": ohlcv["closes"][-1], "quantitative": result, "timestamp": int(time.time())}
+        _simple_cache[cache_key] = {"ts": time.time(), "data": data}
+        return data
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -323,10 +330,16 @@ async def analyze_correlation_live(symbols: str = Query("BTC/USDT,ETH/USDT,SOL/U
 
 @app.get("/analyze/live")
 async def analyze_live(symbol: str = Query("BTC/USDT"), timeframe: str = Query("1h"), limit: int = Query(100), exchange: str = Query("binance")):
+    cache_key = f"live_{symbol}_{timeframe}_{limit}"
+    cached = _simple_cache.get(cache_key)
+    if cached and time.time() - cached["ts"] < 60:
+        return cached["data"]
     try:
         ohlcv = get_ohlcv(symbol, timeframe, limit, exchange, BINANCE_KEY, BINANCE_SECRET)
         signals = generate_technical_signals(ohlcv["closes"], ohlcv["highs"], ohlcv["lows"], ohlcv["volumes"])
-        return {"symbol": symbol, "timeframe": timeframe, "candles": ohlcv["count"], "analysis": signals, "latest_price": ohlcv["closes"][-1], "timestamp": int(time.time())}
+        data = {"symbol": symbol, "timeframe": timeframe, "candles": ohlcv["count"], "analysis": signals, "latest_price": ohlcv["closes"][-1], "timestamp": int(time.time())}
+        _simple_cache[cache_key] = {"ts": time.time(), "data": data}
+        return data
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
