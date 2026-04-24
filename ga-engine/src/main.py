@@ -179,11 +179,30 @@ async def onchain_score_route(symbol: str = "BTC"):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+_advise_api_cache: dict = {}
+
+async def _fetch_advise_background(symbol: str, strategy_id=None):
+    try:
+        data = await get_advise(symbol, strategy_id)
+        _advise_api_cache[symbol] = {"ts": time.time(), "data": data}
+    except Exception as e:
+        logger.warning(f"Advise background {symbol}: {e}")
+
 @app.get("/advise/{symbol}")
 async def advise_route(symbol: str = "BTC", strategy_id: Optional[str] = Query(None)):
-    """Score on-chain como conselheiro externo — não bloqueia trades"""
+    sym = symbol.upper()
+    cached = _advise_api_cache.get(sym)
+    if cached and time.time() - cached["ts"] < 900:
+        return cached["data"]
+    if sym not in _advise_api_cache:
+        asyncio.create_task(_fetch_advise_background(sym, strategy_id))
+        return {
+            "symbol": sym, "score": 0.5, "color": "yellow",
+            "message": "Carregando dados on-chain...",
+            "timestamp": int(time.time()), "cached": False
+        }
     try:
-        return await get_advise(symbol.upper(), strategy_id)
+        return await get_advise(sym, strategy_id)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
