@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 # Cache simples em memória para evitar rate limit
 _cache: dict = {}
-CACHE_TTL = 60  # segundos
+CACHE_TTL = 120  # segundos
 
 
 def _cache_get(key: str):
@@ -30,7 +30,13 @@ def get_exchange(exchange_name: str = "binance", api_key: str = "", secret: str 
     """Inicializa conexão com a exchange via CCXT"""
     try:
         exchange_class = getattr(ccxt, exchange_name)
-        params = {"enableRateLimit": True}
+        params = {
+            "enableRateLimit": True,
+            "timeout": 10000,  # 10 segundos máximo
+            "options": {
+                "defaultType": "spot",
+            }
+        }
         if api_key:
             params["apiKey"] = api_key
             params["secret"] = secret
