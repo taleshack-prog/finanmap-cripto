@@ -41,7 +41,6 @@ export default function DashboardPage() {
   const [analysis,    setAnalysis]    = useState<FullAnalysis | null>(null)
   const [estrategias, setEstrategias] = useState<Estrategia[]>([])
   const [summary,     setSummary]     = useState<TradeSummary | null>(null)
-  const [portfolio,   setPortfolio]   = useState<any>(null)
   const [loading,     setLoading]     = useState(true)
   const [activeBar,   setActiveBar]   = useState<number | null>(null)
   const [lastUpdate,  setLastUpdate]  = useState('')
@@ -59,17 +58,15 @@ export default function DashboardPage() {
     const headers = { Authorization: `Bearer ${token}` }
 
     try {
-      const [analRes, stratRes, tradeRes, portRes] = await Promise.allSettled([
+      const [analRes, stratRes, tradeRes] = await Promise.allSettled([
         fetchWithTimeout(`${API}/api/ga/analyze/fast?symbol=${symbol}&timeframe=1h&limit=100`, { headers }),
         fetchWithTimeout(`${API}/api/ga/strategies`, { headers }),
         fetchWithTimeout(`${API}/api/trades/summary`, { headers }),
-        fetchWithTimeout(`${API}/api/ga/portfolio/binance`, { headers }, 15000),
       ])
 
       if (analRes.status  === 'fulfilled' && analRes.value.ok)  setAnalysis(await analRes.value.json())
       if (stratRes.status === 'fulfilled' && stratRes.value.ok) setEstrategias((await stratRes.value.json()).estrategias || [])
       if (tradeRes.status === 'fulfilled' && tradeRes.value.ok) setSummary(await tradeRes.value.json())
-      if (portRes.status  === 'fulfilled' && portRes.value.ok)  setPortfolio(await portRes.value.json())
 
       setLastUpdate(new Date().toLocaleTimeString('pt-BR'))
     } catch (e) {
@@ -87,7 +84,6 @@ export default function DashboardPage() {
 
   const dir        = analysis?.combined_direction || 'HOLD'
   const dirColor   = dir === 'BUY' ? '#00ff88' : dir === 'SELL' ? '#ff4444' : '#f59e0b'
-  const totalUsd   = portfolio?.total_usdt || 0
   const ativasCount = estrategias.filter(e => e.ativa).length
   const maxChart   = Math.max(...CHART_DATA)
 
@@ -124,7 +120,7 @@ export default function DashboardPage() {
         {/* Métricas principais */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(0,1fr))', gap: '0.75rem', marginBottom: '1.25rem' }}>
           {[
-            { label: 'PORTFÓLIO',      value: totalUsd > 0 ? `$${totalUsd.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}` : '—', color: '#00d4ff' },
+            { label: 'LUCRO TOTAL',     value: summary?.lucroTotal ? `$${summary.lucroTotal}` : '—', color: '#00d4ff' },
             { label: 'SINAL ATUAL',    value: loading ? '...' : dir, color: dirColor },
             { label: 'SCORE COMBINADO',value: loading ? '...' : (analysis?.combined_score?.toFixed(3) || '—'), color: '#7c3aff' },
             { label: 'ESTRATÉGIAS GA', value: `${ativasCount}/${estrategias.length}`, color: '#00ff88' },
@@ -248,34 +244,28 @@ export default function DashboardPage() {
             )}
           </div>
 
-          {/* Portfólio alocação */}
+          {/* Resumo de trades */}
           <div style={glass('rgba(0,212,255,0.15)')}>
-            <div style={{ fontSize: '9px', letterSpacing: '4px', color: 'rgba(0,212,255,0.5)', marginBottom: '1rem' }}>ALOCAÇÃO DO PORTFÓLIO</div>
-            {portfolio?.assets ? (
+            <div style={{ fontSize: '9px', letterSpacing: '4px', color: 'rgba(0,212,255,0.5)', marginBottom: '1rem' }}>RESUMO DE TRADES</div>
+            {summary ? (
               <>
                 <div style={{ fontSize: '1.4rem', fontWeight: 700, color: '#00d4ff', marginBottom: '1rem' }}>
-                  ${Number(portfolio.total_usdt).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  ${summary.lucroTotal}
                 </div>
-                {portfolio.assets.slice(0, 5).map((a: any) => {
-                  const colors: Record<string, string> = { BTC: '#f7931a', ETH: '#627eea', SOL: '#9945ff', USDT: '#00d4ff', BNB: '#f0b90b' }
-                  const color = colors[a.symbol] || '#888'
-                  return (
-                    <div key={a.symbol} style={{ marginBottom: '0.65rem' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px', fontSize: '10px' }}>
-                        <span style={{ color: '#fff', fontWeight: 700 }}>{a.symbol}</span>
-                        <span style={{ color: 'rgba(255,255,255,0.4)' }}>${a.value_usdt.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}</span>
-                        <span style={{ color: a.change_24h >= 0 ? '#00ff88' : '#ff4444' }}>{a.change_24h >= 0 ? '+' : ''}{a.change_24h.toFixed(2)}%</span>
-                        <span style={{ color }}>{a.allocation_pct.toFixed(1)}%</span>
-                      </div>
-                      <div style={{ height: '3px', background: 'rgba(255,255,255,0.06)', borderRadius: '2px', overflow: 'hidden' }}>
-                        <div style={{ height: '100%', width: `${a.allocation_pct}%`, background: color, boxShadow: `0 0 6px ${color}` }} />
-                      </div>
-                    </div>
-                  )
-                })}
+                {[
+                  { label: 'TOTAL DE TRADES', value: summary.totalTrades.toString(), color: '#fff' },
+                  { label: 'FECHADOS',         value: summary.fechados.toString(),    color: '#00ff88' },
+                  { label: 'ABERTOS',          value: summary.abertos.toString(),     color: '#f59e0b' },
+                  { label: 'WIN RATE',         value: `${summary.winRate}%`,          color: summary.winRate >= '50' ? '#00ff88' : '#ff4444' },
+                ].map(({ label, value, color }) => (
+                  <div key={label} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.4rem 0', borderBottom: '0.5px solid rgba(255,255,255,0.05)', fontSize: '10px' }}>
+                    <span style={{ color: 'rgba(255,255,255,0.35)', letterSpacing: '2px' }}>{label}</span>
+                    <span style={{ color, fontWeight: 700 }}>{value}</span>
+                  </div>
+                ))}
               </>
             ) : (
-              <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.2)', textAlign: 'center', padding: '1.5rem 0' }}>⟳ Carregando portfólio...</div>
+              <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.2)', textAlign: 'center', padding: '1.5rem 0' }}>⟳ Carregando trades...</div>
             )}
           </div>
         </div>
