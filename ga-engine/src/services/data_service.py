@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 # Cache simples em memória para evitar rate limit
 _cache: dict = {}
-CACHE_TTL = 120  # segundos
+CACHE_TTL = 300  # 5 minutos — candles 1h mudam a cada hora
 
 
 def _cache_get(key: str):

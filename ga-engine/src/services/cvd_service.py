@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Cache para evitar requisições repetidas
 _cvd_cache: dict = {}
-CVD_TTL = 60  # 1 minuto de cache
+CVD_TTL = 120  # 2 minutos — janela CVD é 5min, não precisa atualizar a cada tick
 
 
 def _cache_get(key: str):
