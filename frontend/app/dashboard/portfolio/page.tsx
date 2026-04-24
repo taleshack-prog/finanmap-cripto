@@ -1,7 +1,22 @@
 'use client'
 import { useEffect, useState } from 'react'
 
-const GA = 'http://localhost:8110'
+const API = 'http://localhost:3020'
+const GA  = 'http://localhost:8110'
+
+function getToken() {
+  if (typeof window !== 'undefined') return localStorage.getItem('finanmap_token') || ''
+  return ''
+}
+
+const STABLECOINS_SET = new Set(['USDT','USDC','BUSD','DAI','TUSD','FDUSD'])
+const MEMECOINS_SET   = new Set(['DOGE','SHIB','PEPE','FLOKI','BONK','WIF','BOME'])
+function guessCategory(symbol: string): string {
+  if (symbol === 'BTC') return 'bitcoin'
+  if (STABLECOINS_SET.has(symbol)) return 'stablecoin'
+  if (MEMECOINS_SET.has(symbol)) return 'memecoin'
+  return 'altcoin'
+}
 
 const CATEGORY_CONFIG: Record<string, { label: string; color: string }> = {
   bitcoin:    { label: 'Bitcoin',     color: '#f7931a' },
@@ -57,11 +72,43 @@ export default function PortfolioPage() {
   const fetchBinance = async () => {
     setLoading(true); setError('')
     try {
-      const r = await fetch(`${GA}/portfolio/binance`)
+      const r = await fetch(`${API}/api/portfolio`, {
+        headers: { 'Authorization': `Bearer ${getToken()}` }
+      })
       if (!r.ok) throw new Error(await r.text())
-      setPortfolio(await r.json())
+      const data = await r.json()
+
+      // Normaliza formato do banco (ativos/quantidade/precoUnitario) → interface Portfolio
+      const raw: any[] = data.ativos || []
+      const total = parseFloat(data.totalUsd || '0')
+      const assets: Asset[] = raw.map(a => {
+        const qty   = Number(a.quantidade)
+        const price = Number(a.precoUnitario)
+        const value = qty * price
+        const cat   = guessCategory(a.ativo)
+        return {
+          symbol:         a.ativo,
+          quantity:       qty,
+          price_usdt:     price,
+          value_usdt:     value,
+          change_24h:     0,
+          category:       cat,
+          allocation_pct: total > 0 ? Math.round(value / total * 1000) / 10 : 0,
+          source:         a.exchangeName || 'database',
+        }
+      }).sort((a, b) => b.value_usdt - a.value_usdt)
+
+      // Reconstrói by_category
+      const by_category: Record<string, { total_usdt: number; count: number }> = {}
+      for (const a of assets) {
+        if (!by_category[a.category]) by_category[a.category] = { total_usdt: 0, count: 0 }
+        by_category[a.category].total_usdt += a.value_usdt
+        by_category[a.category].count++
+      }
+
+      setPortfolio({ total_usdt: total, assets, by_category, count: assets.length, source: 'database' })
     } catch (e: any) {
-      setError(e.message || 'Erro ao buscar portfólio da Binance')
+      setError(e.message || 'Erro ao buscar portfólio')
     } finally { setLoading(false) }
   }
 
