@@ -453,15 +453,22 @@ async def portfolio_prices(symbols: str = Query("BTC/USDT,ETH/USDT,SOL/USDT"), e
 
 # ─── PORTFÓLIO ──────────────────────────────────────────────
 
+_portfolio_api_cache: dict = {"ts": 0, "data": None}
+
 @app.get("/portfolio/binance")
 async def portfolio_binance(api_key: Optional[str] = Query(None), secret: Optional[str] = Query(None)):
+    global _portfolio_api_cache
+    if time.time() - _portfolio_api_cache["ts"] < 60 and _portfolio_api_cache["data"]:
+        return _portfolio_api_cache["data"]
     key, sec = api_key or BINANCE_KEY, secret or BINANCE_SECRET
     if not key or not sec: raise HTTPException(status_code=400, detail="API Key e Secret necessários")
     try:
         assets = get_binance_balances(key, sec)
         total  = sum(a["value_usdt"] for a in assets)
         for a in assets: a["allocation_pct"] = round(a["value_usdt"] / total * 100, 2) if total > 0 else 0
-        return {"total_usdt": round(total, 2), "assets": assets, "count": len(assets), "source": "binance_real"}
+        data = {"total_usdt": round(total, 2), "assets": assets, "count": len(assets), "source": "binance_real"}
+        _portfolio_api_cache = {"ts": time.time(), "data": data}
+        return data
     except Exception as e: raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/portfolio/manual")
