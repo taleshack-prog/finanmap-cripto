@@ -1,4 +1,4 @@
-import { Router, Response } from 'express';
+import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authenticate, AuthRequest } from '../middleware/auth';
 
@@ -120,5 +120,47 @@ router.get('/summary', authenticate, async (req: AuthRequest, res: Response) => 
     res.status(500).json({ error: 'Erro ao gerar summary' });
   }
 });
+
+// POST /api/portfolio/sync — recebe dados do GA Engine e salva no banco
+router.post('/sync', async (req: Request, res: Response) => {
+  try {
+    const { user_id, exchange, assets } = req.body
+
+    if (!user_id || !assets || !Array.isArray(assets)) {
+      return res.status(400).json({ error: 'user_id e assets obrigatórios' })
+    }
+
+    const results = await Promise.all(
+      assets.map((a: any) =>
+        prisma.portfolio.upsert({
+          where: {
+            userId_exchangeName_ativo: {
+              userId:       user_id,
+              exchangeName: exchange || 'binance',
+              ativo:        a.ativo,
+            }
+          },
+          update: {
+            quantidade:    a.quantidade,
+            precoUnitario: a.preco_unitario,
+            atualizadoEm:  new Date(),
+          },
+          create: {
+            userId:        user_id,
+            exchangeName:  exchange || 'binance',
+            ativo:         a.ativo,
+            quantidade:    a.quantidade,
+            precoUnitario: a.preco_unitario,
+            atualizadoEm:  new Date(),
+          }
+        })
+      )
+    )
+
+    return res.json({ synced: results.length, timestamp: new Date() })
+  } catch (e: any) {
+    return res.status(500).json({ error: e?.message })
+  }
+})
 
 export default router;

@@ -16,6 +16,7 @@ from src.services.technical_analysis import volume_delta, atr_normalized, rvp_sc
 from src.services.cvd_service import get_cvd_real
 from src.services.order_executor import OrderExecutor, OrderResult
 from src.services.trade_persistence import save_trade_open, save_trade_close
+from src.services.portfolio_sync_service import sync_portfolio_to_db
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +191,11 @@ class TradingBot:
                 await self._tick()
                 self.state.last_check = time.time()
                 self.state.errors = 0
+                asyncio.create_task(sync_portfolio_to_db(
+                    user_id = self.config.user_id,
+                    api_key = self.config.api_key,
+                    secret  = self.config.api_secret,
+                ))
             except asyncio.CancelledError:
                 break
             except Exception as e:
