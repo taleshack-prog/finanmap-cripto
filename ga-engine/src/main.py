@@ -410,9 +410,16 @@ async def bot_status(bot_id: str):
     if bot_id not in active_bots: raise HTTPException(status_code=404, detail="Bot não encontrado")
     return active_bots[bot_id].get_status()
 
+_bot_list_cache: dict = {"ts": 0, "data": None}
+
 @app.get("/bot/list")
 async def bot_list():
-    return {"bots": [b.get_status() for b in active_bots.values()], "count": len(active_bots)}
+    global _bot_list_cache
+    if time.time() - _bot_list_cache["ts"] < 10 and _bot_list_cache["data"]:
+        return _bot_list_cache["data"]
+    data = {"bots": [b.get_status() for b in active_bots.values()], "count": len(active_bots)}
+    _bot_list_cache = {"ts": time.time(), "data": data}
+    return data
 
 @app.post("/bot/tick/{bot_id}")
 async def bot_tick(bot_id: str):
