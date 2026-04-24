@@ -69,6 +69,8 @@ export default function PortfolioPage() {
     { symbol: 'USDT', quantity: '500'  },
   ])
 
+  useEffect(() => { fetchBinance() }, [])
+
   const fetchBinance = async () => {
     setLoading(true); setError('')
     try {
