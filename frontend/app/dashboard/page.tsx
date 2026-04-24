@@ -2,6 +2,7 @@
 import { useEffect, useState, useCallback } from 'react'
 
 const API = 'http://localhost:3020'
+const GA  = 'http://localhost:8110'
 
 const glass = (accent = 'rgba(124,58,255,0.2)') => ({
   background: 'rgba(255,255,255,0.02)', border: `0.5px solid ${accent}`,
@@ -58,13 +59,22 @@ export default function DashboardPage() {
     const headers = { Authorization: `Bearer ${token}` }
 
     try {
-      const [analRes, stratRes, tradeRes] = await Promise.allSettled([
-        fetchWithTimeout(`${API}/api/ga/analyze/fast?symbol=${symbol}&timeframe=1h&limit=100`, { headers }),
+      // Substitui a chamada analyze/fast por bot/list
+      const botsRes = await fetchWithTimeout(`${GA}/bot/list`, {}, 8000)
+        .catch(() => ({ ok: false }))
+
+      const [stratRes, tradeRes] = await Promise.allSettled([
         fetchWithTimeout(`${API}/api/ga/strategies`, { headers }),
         fetchWithTimeout(`${API}/api/trades/summary`, { headers }),
       ])
 
-      if (analRes.status  === 'fulfilled' && analRes.value.ok)  setAnalysis(await analRes.value.json())
+      const bots = (botsRes as any).ok ? await (botsRes as any).json() : { bots: [] }
+      const activeBots = bots.bots || []
+      const bestBot = activeBots.find((b: any) => b.last_signal) || activeBots[0]
+      const signal = bestBot?.last_signal || 'HOLD'
+      const score = bestBot?.last_score || 0
+      setAnalysis({ combined_direction: signal, combined_score: score } as any)
+
       if (stratRes.status === 'fulfilled' && stratRes.value.ok) setEstrategias((await stratRes.value.json()).estrategias || [])
       if (tradeRes.status === 'fulfilled' && tradeRes.value.ok) setSummary(await tradeRes.value.json())
 
