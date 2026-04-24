@@ -145,6 +145,87 @@ def get_binance_balances(api_key: str, secret: str) -> list:
         raise ValueError(f"Erro ao buscar saldos: {e}")
 
 
+def _build_assets(assets_raw: dict, tickers: dict) -> list:
+    """Constrói lista de ativos a partir de saldo bruto + tickers."""
+    result = []
+    for symbol, quantity in assets_raw.items():
+        price_usdt = 1.0
+        change_24h = 0.0
+        if symbol not in STABLECOINS:
+            ticker = tickers.get(f"{symbol}/USDT", {})
+            price_usdt = ticker.get("last") or 0
+            change_24h = ticker.get("percentage") or 0
+            if not price_usdt:
+                continue
+        value_usdt = quantity * price_usdt
+        if value_usdt < 0.01:
+            continue
+        result.append({
+            "symbol":     symbol,
+            "quantity":   quantity,
+            "price_usdt": price_usdt,
+            "value_usdt": round(value_usdt, 2),
+            "change_24h": round(change_24h, 2),
+            "category":   categorize(symbol),
+            "source":     "binance",
+        })
+    return sorted(result, key=lambda x: x["value_usdt"], reverse=True)
+
+
+def get_binance_balances_fast(api_key: str, secret: str) -> list:
+    """
+    Versão rápida — só ativos com saldo real.
+    Cache 60s. Para dashboard.
+    """
+    cache_key = f"portfolio_fast_{api_key[:8]}"
+    cached = _portfolio_cache.get(cache_key)
+    if cached and time.time() - cached["ts"] < 60:
+        logger.info("Portfolio fast: retornando cache")
+        return cached["data"]
+
+    exchange = ccxt.binance({
+        "apiKey": api_key, "secret": secret,
+        "enableRateLimit": True, "timeout": 10000,
+        "options": {"defaultType": "spot", "fetchTickerQuote": False}
+    })
+
+    # Busca só saldo spot
+    balance = exchange.fetch_balance({"type": "spot"})
+    assets_raw = {s: v for s, v in balance["total"].items() if v > 0.000001}
+
+    # Busca preços só dos ativos que temos
+    need_price = [s for s in assets_raw if s not in STABLECOINS]
+    symbols_usdt = [f"{s}/USDT" for s in need_price]
+
+    tickers = {}
+    if symbols_usdt:
+        try:
+            tickers = exchange.fetch_tickers(symbols_usdt)
+        except Exception as e:
+            logger.warning(f"fetch_tickers falhou: {e}")
+
+    assets = _build_assets(assets_raw, tickers)
+    _portfolio_cache[cache_key] = {"ts": time.time(), "data": assets}
+    return assets
+
+
+def get_binance_balances_full(api_key: str, secret: str) -> list:
+    """
+    Versão completa — todos os ativos históricos.
+    Cache 1h. Para análise da IA.
+    Roda em background, não bloqueia dashboard.
+    """
+    cache_key = f"portfolio_full_{api_key[:8]}"
+    cached = _portfolio_cache.get(cache_key)
+    if cached and time.time() - cached["ts"] < 3600:
+        return cached["data"]
+
+    # Mesma lógica atual mas sem pressa
+    assets = get_binance_balances(api_key, secret)
+    _portfolio_cache[cache_key] = {"ts": time.time(), "data": assets}
+    return assets
+
+
 def get_prices_for_symbols(symbols: list) -> dict:
     """Busca preços atuais para lista de símbolos"""
     exchange = ccxt.binance({"enableRateLimit": True})

@@ -25,7 +25,8 @@ from src.services.data_service import (
     get_ohlcv, get_ticker, get_order_book, get_multiple_tickers
 )
 from src.services.portfolio_service import (
-    get_binance_balances, get_prices_for_symbols, categorize
+    get_binance_balances, get_binance_balances_fast, get_binance_balances_full,
+    get_prices_for_symbols, categorize
 )
 from src.services.advise_service import get_advise
 from src.services.bot_persistence import restore_active_bots
@@ -463,7 +464,7 @@ async def portfolio_binance(api_key: Optional[str] = Query(None), secret: Option
     key, sec = api_key or BINANCE_KEY, secret or BINANCE_SECRET
     if not key or not sec: raise HTTPException(status_code=400, detail="API Key e Secret necessários")
     try:
-        assets = get_binance_balances(key, sec)
+        assets = get_binance_balances_fast(key, sec)
         total  = sum(a["value_usdt"] for a in assets)
         for a in assets: a["allocation_pct"] = round(a["value_usdt"] / total * 100, 2) if total > 0 else 0
         data = {"total_usdt": round(total, 2), "assets": assets, "count": len(assets), "source": "binance_real"}
