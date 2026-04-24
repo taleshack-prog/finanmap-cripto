@@ -386,9 +386,12 @@ router.get('/analyze/fast', authenticate, async (req: AuthRequest, res: Response
   try {
     const { symbol = 'BTC/USDT', timeframe = '1h', limit = '100' } = req.query as any
     const [techRes, quantRes, obRes] = await Promise.all([
-      axios.get(`${GA_URL}/analyze/live?symbol=${symbol}&timeframe=${timeframe}&limit=${limit}`, { timeout: 15000 }),
-      axios.get(`${GA_URL}/analyze/quantitative?symbol=${symbol}&timeframe=${timeframe}&limit=${limit}`, { timeout: 15000 }),
-      axios.get(`${GA_URL}/market/orderbook?symbol=${symbol}&limit=20`, { timeout: 8000 }).catch(() => ({ data: {} })),
+      axios.get(`${GA_URL}/analyze/live?symbol=${symbol}&timeframe=${timeframe}&limit=${limit}`, { timeout: 5000 })
+        .catch(() => ({ data: { latest_price: 0, analysis: { direction: 'HOLD', signal: 0 } } })),
+      axios.get(`${GA_URL}/analyze/quantitative?symbol=${symbol}&timeframe=${timeframe}&limit=${limit}`, { timeout: 5000 })
+        .catch(() => ({ data: { quantitative: { score: 0 } } })),
+      axios.get(`${GA_URL}/market/orderbook?symbol=${symbol}&limit=20`, { timeout: 3000 })
+        .catch(() => ({ data: {} })),
     ])
 
     const ob = obRes.data || {}
