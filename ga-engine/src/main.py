@@ -30,6 +30,7 @@ from src.services.portfolio_service import (
 )
 from src.services.advise_service import get_advise
 from src.services.bot_persistence import restore_active_bots
+from src.services.market_scan_service import run_market_scan
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 logging.basicConfig(level=logging.INFO)
@@ -81,6 +82,13 @@ async def startup_event():
     scheduler.add_job(re_evolve_weekly, "cron", day_of_week="sun", hour=2, minute=0)
     scheduler.start()
     logger.info("⏰ Agendador semanal iniciado — re-evolução todo domingo às 02h")
+
+    async def market_scan_job():
+        await run_market_scan(BINANCE_KEY, BINANCE_SECRET)
+
+    scheduler.add_job(market_scan_job, "interval", hours=4, id="market_scan")
+    asyncio.create_task(run_market_scan(BINANCE_KEY, BINANCE_SECRET))
+    logger.info("🔍 MarketScan agendado — a cada 4h")
 
 app.add_middleware(
     CORSMiddleware,
