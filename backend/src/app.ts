@@ -7,6 +7,7 @@ import strategyRoutes  from './routes/strategies';
 import tradeRoutes     from './routes/trades';
 import fireRoutes      from './routes/fire';
 import gaRoutes        from './routes/ga';
+import marketRoutes    from './routes/market';
 
 dotenv.config();
 
@@ -30,6 +31,7 @@ app.use('/api/strategies', strategyRoutes);
 app.use('/api/trades',    tradeRoutes);
 app.use('/api/fire',      fireRoutes);
 app.use('/api/ga',        gaRoutes);
+app.use('/api/market',    marketRoutes);
 
 // Status
 app.get('/api/status', (_req, res) => {
