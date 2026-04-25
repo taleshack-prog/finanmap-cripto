@@ -25,6 +25,9 @@ export default function StrategiesPage() {
   const [form, setForm] = useState({
     nome: '', par: 'BTC/USDT', candles: '500', robos: '10', geracoes: '20'
   })
+  const [recomendacoes, setRecomendacoes] = useState<any[]>([])
+  const [evolvingAI,    setEvolvingAI]    = useState(false)
+  const [aiProgress,    setAiProgress]    = useState('')
 
   const headers = { 'Authorization': `Bearer ${getToken()}`, 'Content-Type': 'application/json' }
 
@@ -40,6 +43,13 @@ export default function StrategiesPage() {
   }, [])
 
   useEffect(() => { fetchEstrategias() }, [fetchEstrategias])
+
+  useEffect(() => {
+    fetch(`${API}/api/market/recommendations`)
+      .then(r => r.json())
+      .then(d => setRecomendacoes((d.results || []).filter((r: any) => r.recomendado).slice(0, 5)))
+      .catch(() => {})
+  }, [])
 
   const evoluir = async () => {
     if (evolving) return
@@ -70,6 +80,34 @@ export default function StrategiesPage() {
     } catch (e: any) {
       setMsg({ type: 'err', text: `✗ Erro: ${e.message}` })
     } finally { setEvolving(false) }
+  }
+
+  const evoluirIA = async () => {
+    if (evolvingAI) return
+    setEvolvingAI(true)
+    const top = recomendacoes.slice(0, 3)
+    for (const rec of top) {
+      setAiProgress(`Evoluindo ${rec.symbol}... (score=${rec.overall_score?.toFixed(2)})`)
+      try {
+        await fetch(`${API}/api/ga/evolve/sync`, {
+          method:  'POST',
+          headers: { ...headers, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            symbol:           rec.symbol,
+            timeframe:        '1h',
+            data_limit:       500,
+            population_size:  10,
+            generations:      20,
+            capital:          109,
+            dry_run:          false,
+            min_buy_pressure: 0.52,
+          }),
+        })
+      } catch (e) { }
+    }
+    setAiProgress('')
+    setEvolvingAI(false)
+    await fetchEstrategias()
   }
 
   const ativar = async (id: string) => {
@@ -148,6 +186,25 @@ export default function StrategiesPage() {
           border: `0.5px solid ${msg.type === 'ok' ? 'rgba(0,255,136,0.3)' : 'rgba(255,68,68,0.3)'}`,
           color: msg.type === 'ok' ? '#00ff88' : '#ff4444' }}>
           {msg.text}
+        </div>
+      )}
+
+      {/* Recomendações IA */}
+      {recomendacoes.length > 0 && (
+        <div style={{ background: 'rgba(0,212,255,0.05)', border: '0.5px solid rgba(0,212,255,0.3)', borderRadius: '8px', padding: '1.2rem', marginBottom: '1rem' }}>
+          <div style={{ fontSize: '9px', letterSpacing: '4px', color: 'rgba(0,212,255,0.7)', marginBottom: '0.8rem' }}>
+            🔍 PARES RECOMENDADOS PELA IA
+          </div>
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '1rem' }}>
+            {recomendacoes.map(r => (
+              <div key={r.symbol} style={{ padding: '0.3rem 0.8rem', background: 'rgba(0,212,255,0.1)', border: '0.5px solid rgba(0,212,255,0.3)', borderRadius: '4px', fontSize: '10px', color: '#00d4ff' }}>
+                {r.symbol.replace('/USDT','')} • score={parseFloat(r.overall_score).toFixed(2)}
+              </div>
+            ))}
+          </div>
+          <button onClick={evoluirIA} disabled={evolvingAI} style={{ padding: '0.6rem 1.5rem', background: evolvingAI ? 'rgba(0,212,255,0.1)' : 'linear-gradient(135deg, rgba(0,212,255,0.8), rgba(124,58,255,0.6))', border: '1px solid rgba(0,212,255,0.5)', color: '#fff', fontSize: '10px', letterSpacing: '3px', cursor: evolvingAI ? 'not-allowed' : 'pointer', borderRadius: '4px' }}>
+            {evolvingAI ? `⟳ ${aiProgress}` : '▸ EVOLUIR TOP 3 PARES IA'}
+          </button>
         </div>
       )}
 
