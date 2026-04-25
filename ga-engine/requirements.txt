@@ -11,4 +11,5 @@ ccxt==4.2.25
 python-dotenv==1.0.0
 redis==5.0.1
 httpx==0.26.0
+apscheduler>=3.10.0
 pytest==7.4.4

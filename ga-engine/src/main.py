@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict
-import time, logging, numpy as np, os
+import time, logging, numpy as np, os, asyncio, httpx
 
 from src.core.trading_bot import TradingBot, BotConfig
 from src.core.ga_population import GAPopulation
@@ -30,9 +30,12 @@ from src.services.portfolio_service import (
 )
 from src.services.advise_service import get_advise
 from src.services.bot_persistence import restore_active_bots
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+scheduler = AsyncIOScheduler(timezone="America/Sao_Paulo")
 
 app = FastAPI(
     title="FinanMap Cripto - GA Engine",
@@ -42,8 +45,42 @@ app = FastAPI(
 
 @app.on_event("startup")
 async def startup_event():
-    import asyncio
     asyncio.create_task(restore_active_bots())
+
+    async def re_evolve_weekly():
+        logger.info("🔄 Re-evolução semanal iniciada...")
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                r = await client.get(f"http://localhost:3020/api/ga/strategies/active")
+                strategies = r.json().get("estrategias", [])
+            for s in strategies:
+                if not s.get("bot_config"):
+                    continue
+                symbol    = s.get("symbol", "BTC/USDT")
+                timeframe = s.get("timeframe", "1h")
+                logger.info(f"Re-evoluindo {symbol}...")
+                ga = GAPopulation(
+                    population_size = 10,
+                    generations     = 20,
+                    symbol          = symbol,
+                    timeframe       = timeframe,
+                    data_limit      = 500,
+                    exchange        = "binance",
+                    api_key         = BINANCE_KEY,
+                    api_secret      = BINANCE_SECRET,
+                )
+                result = ga.run()
+                logger.info(
+                    f"Re-evolução {symbol} | fitness={result['fitness']:.2f} "
+                    f"retorno={result['total_return']:.1f}%"
+                )
+                await asyncio.sleep(30)
+        except Exception as e:
+            logger.error(f"Re-evolução semanal erro: {e}")
+
+    scheduler.add_job(re_evolve_weekly, "cron", day_of_week="sun", hour=2, minute=0)
+    scheduler.start()
+    logger.info("⏰ Agendador semanal iniciado — re-evolução todo domingo às 02h")
 
 app.add_middleware(
     CORSMiddleware,
