@@ -87,7 +87,7 @@ export default function StrategiesPage() {
     setEvolvingAI(true)
     const top = recomendacoes.slice(0, 3)
     for (const rec of top) {
-      setAiProgress(`Evoluindo ${rec.symbol}... (score=${rec.overall_score?.toFixed(2)})`)
+      setAiProgress(`Evoluindo ${rec.symbol}... (score=${parseFloat(rec.overall_score || '0').toFixed(2)})`)
       try {
         await fetch(`${API}/api/ga/evolve/sync`, {
           method:  'POST',
