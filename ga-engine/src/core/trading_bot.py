@@ -550,7 +550,14 @@ class TradingBot:
             balance = self.executor.exchange.fetch_balance()
             usdt_free = float(balance.get('free', {}).get('USDT', 0) or 0)
             max_size  = usdt_free * 0.90  # usa no máximo 90% do USDT livre
-            size_usd  = min(self.config.capital * kelly_adjusted, max_size)
+            # Capital dinâmico — usa saldo real como base
+            # Em vez de capital fixo configurado, usa USDT disponível
+            capital_efetivo = min(usdt_free * 0.9, self.config.capital)
+            # Se win rate > 60%, permite usar até 110% do capital configurado
+            if self.state.win_rate > 60 and self.state.total_trades >= 5:
+                capital_efetivo = min(usdt_free * 0.9, self.config.capital * 1.1)
+                self._log(f"Capital aumentado 10% | WR={self.state.win_rate:.0f}% > 60%")
+            size_usd  = min(capital_efetivo * kelly_adjusted, max_size)
             if size_usd < 5.0:
                 self._log(f"USDT insuficiente: ${usdt_free:.2f} livre — mínimo $5", "WARNING")
                 return
