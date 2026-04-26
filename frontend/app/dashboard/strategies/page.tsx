@@ -91,7 +91,7 @@ export default function StrategiesPage() {
       try {
         await fetch(`${API}/api/ga/evolve/sync`, {
           method:  'POST',
-          headers: { ...headers, 'Content-Type': 'application/json' },
+          headers: { 'Authorization': `Bearer ${getToken()}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({
             symbol:           rec.symbol,
             timeframe:        '1h',
@@ -138,7 +138,7 @@ export default function StrategiesPage() {
   }
 
   const ativas   = estrategias.filter(e => e.ativa)
-  const inativas = estrategias.filter(e => !e.ativa)
+
   const melhorFit = estrategias.length ? Math.max(...estrategias.map(e => e.fitnessScore)) : 0
   const melhorRet = estrategias.length ? Math.max(...estrategias.map(e => e.retornoEsperado)) : 0
 
