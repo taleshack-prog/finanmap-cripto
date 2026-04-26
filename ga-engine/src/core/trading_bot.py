@@ -459,6 +459,23 @@ class TradingBot:
             except Exception as e:
                 self._log(f"RVP erro (não bloqueia): {e}", "WARNING")
 
+        # ── Limite global de posições simultâneas ─────────────────
+        MAX_POSICOES_SIMULTANEAS = 3
+        if tech_direction == "BUY" and self.state.position == "none":
+            # Conta posições abertas em todos os bots ativos
+            from src.main import active_bots
+            posicoes_abertas = sum(
+                1 for b in active_bots.values()
+                if b.state.position != "none"
+            )
+            if posicoes_abertas >= MAX_POSICOES_SIMULTANEAS:
+                self._log(
+                    f"Limite de posições atingido | "
+                    f"{posicoes_abertas}/{MAX_POSICOES_SIMULTANEAS} abertas — aguardando",
+                    "WARNING"
+                )
+                return
+
         # 6. Decisão de entrada — técnica + fluxo (fluxo SÓ na entrada)
         if tech_direction == "BUY" and self.state.position == "none":
             flow_approved = True
