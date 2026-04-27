@@ -50,7 +50,7 @@ async def startup_event():
 
     # Warmup cache do bot/list
     async def _warmup_bot_list():
-        await asyncio.sleep(5)
+        await asyncio.sleep(30)  # aguarda bots restaurarem completamente
         global _bot_list_cache
         data = {"bots": [b.get_status() for b in active_bots.values()], "count": len(active_bots)}
         _bot_list_cache = {"ts": time.time(), "data": data, "loading": False}
