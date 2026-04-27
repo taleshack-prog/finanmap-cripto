@@ -3,6 +3,7 @@ FinanMap Cripto - Bot Persistence Service
 Salva estado dos bots ativos e restaura automaticamente ao subir o GA Engine.
 """
 
+import asyncio
 import httpx
 import logging
 import time
@@ -35,6 +36,8 @@ async def restore_active_bots():
                 logger.info("Nenhum bot para restaurar")
                 return
 
+            # Limita restauração a 8 bots máximo
+            estrategias = estrategias[:8]
             logger.info(f"Restaurando {len(estrategias)} bots...")
             restored = 0
 
@@ -87,6 +90,8 @@ async def restore_active_bots():
                             json={"bot_id": bot_id},
                             timeout=5,
                         )
+                        # Pausa entre restaurações para não saturar rate limit
+                        await asyncio.sleep(2)
                     else:
                         logger.warning(f"Falha ao restaurar {e.get('nome')}: {start_r.text[:100]}")
 
