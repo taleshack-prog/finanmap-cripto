@@ -48,6 +48,15 @@ app = FastAPI(
 async def startup_event():
     asyncio.create_task(restore_active_bots())
 
+    # Warmup cache do bot/list
+    async def _warmup_bot_list():
+        await asyncio.sleep(5)
+        global _bot_list_cache
+        data = {"bots": [b.get_status() for b in active_bots.values()], "count": len(active_bots)}
+        _bot_list_cache = {"ts": time.time(), "data": data, "loading": False}
+        logger.info(f"Bot list cache aquecido: {data['count']} bots")
+    asyncio.create_task(_warmup_bot_list())
+
     async def re_evolve_weekly():
         logger.info("🔄 Re-evolução semanal iniciada...")
         try:
@@ -475,16 +484,23 @@ async def bot_status(bot_id: str):
     if bot_id not in active_bots: raise HTTPException(status_code=404, detail="Bot não encontrado")
     return active_bots[bot_id].get_status()
 
-_bot_list_cache: dict = {"ts": 0, "data": None}
+_bot_list_cache: dict = {"ts": 0, "data": None, "loading": False}
 
 @app.get("/bot/list")
 async def bot_list():
     global _bot_list_cache
-    if time.time() - _bot_list_cache["ts"] < 10 and _bot_list_cache["data"]:
+    if time.time() - _bot_list_cache["ts"] < 30 and _bot_list_cache["data"]:
         return _bot_list_cache["data"]
-    data = {"bots": [b.get_status() for b in active_bots.values()], "count": len(active_bots)}
-    _bot_list_cache = {"ts": time.time(), "data": data}
-    return data
+    if _bot_list_cache["loading"] and _bot_list_cache["data"]:
+        return _bot_list_cache["data"]
+    _bot_list_cache["loading"] = True
+    try:
+        data = {"bots": [b.get_status() for b in active_bots.values()], "count": len(active_bots)}
+        _bot_list_cache = {"ts": time.time(), "data": data, "loading": False}
+        return data
+    except Exception as e:
+        _bot_list_cache["loading"] = False
+        raise e
 
 @app.post("/bot/tick/{bot_id}")
 async def bot_tick(bot_id: str):
