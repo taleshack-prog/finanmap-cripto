@@ -147,8 +147,8 @@ class TradingBot:
             # Valor do saldo em USDT
             value_usdt = total * price
 
-            # Só considera posição se valor > $3 (evita pó)
-            min_value = 3.0
+            # Só considera posição se valor > $10 (evita pó)
+            min_value = 10.0
             if value_usdt < min_value:
                 return
 
@@ -620,12 +620,14 @@ class TradingBot:
         if self.state.position == "none":
             return
 
-        # Verifica valor mínimo da ordem (Binance mínimo $5)
+        # Verifica valor mínimo da ordem (Binance mínimo varia por par)
+        # ZEC/AXS/etc precisam de $10+, outros $5
         if price:
             order_value = self.state.position_size * price
-            if order_value < 5.0:
+            min_notional = 10.0  # conservador — vale para todos os pares
+            if order_value < min_notional:
                 self._log(
-                    f"Posição muito pequena para fechar: ${order_value:.2f} < $5.00 mínimo Binance — descartando",
+                    f"Posição muito pequena para fechar: ${order_value:.2f} < ${min_notional:.0f} mínimo Binance — descartando",
                     "WARNING"
                 )
                 self.state.position      = "none"
