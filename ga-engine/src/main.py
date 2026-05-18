@@ -31,7 +31,9 @@ from src.services.portfolio_service import (
 from src.services.advise_service import get_advise
 from src.services.bot_persistence import restore_active_bots
 from src.services.market_scan_service import run_market_scan
+from src.services.reversion_service import reversion_signal as get_reversion_signal
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import ccxt
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -565,6 +567,19 @@ async def portfolio_manual(data: dict):
     total = sum(a["value_usdt"] for a in assets)
     for a in assets: a["allocation_pct"] = round(a["value_usdt"] / total * 100, 2) if total > 0 else 0
     return {"total_usdt": round(total, 2), "assets": sorted(assets, key=lambda x: x["value_usdt"], reverse=True), "count": len(assets), "source": "manual"}
+
+
+@app.post("/reversion_signal")
+async def reversion_signal_endpoint(symbol: str = Query("BTC/USDT")):
+    try:
+        exchange = ccxt.binance({
+            "apiKey": BINANCE_KEY, "secret": BINANCE_SECRET,
+            "enableRateLimit": True, "timeout": 10000,
+            "options": {"defaultType": "spot"}
+        })
+        return await get_reversion_signal(symbol, exchange)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ─── BACKTEST ───────────────────────────────────────────────

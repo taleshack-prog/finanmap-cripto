@@ -478,6 +478,24 @@ class TradingBot:
 
         # 6. Decisão de entrada — técnica + fluxo (fluxo SÓ na entrada)
         if tech_direction == "BUY" and self.state.position == "none":
+            # Sistema de Reversão Intraday — filtro adicional
+            try:
+                from src.services.reversion_service import reversion_signal as rev_sig
+                rev = await rev_sig(self.config.symbol, self.executor.exchange)
+                if rev["signal"] == "REVERSION_SELL":
+                    self._log(
+                        f"REVERSÃO DETECTADA | {rev['signal']} | "
+                        f"conf={rev['confidence']:.0f}% | {rev['confirmations']}/3 camadas — bloqueando BUY",
+                        "WARNING"
+                    )
+                    return
+                if rev["signal"] in ["REVERSION_BUY", "ALERT"]:
+                    self._log(
+                        f"Reversão favorável | {rev['signal']} | conf={rev['confidence']:.0f}%"
+                    )
+            except Exception as e:
+                self._log(f"Reversão check erro (não bloqueia): {e}", "WARNING")
+
             flow_approved = True
             if self.config.use_flow_filter and flow:
                 flow_approved = flow.flow_ok
