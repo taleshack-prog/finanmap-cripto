@@ -119,8 +119,8 @@ async def macro_context(symbol: str, exchange) -> dict:
             "regime":        regime,
             "bias":          bias,
             "price_now":     price_now,
-            "price_in_zone": price_in_zone,
-            "in_value_area": in_value_area,
+            "price_in_zone": bool(price_in_zone),
+            "in_value_area": bool(in_value_area),
             "distance_vwap_pct": round((price_now - vwap) / vwap * 100, 4),
         }
         _cache_set(cache_key, result)
@@ -204,10 +204,10 @@ async def micro_flow(symbol: str, exchange) -> dict:
             "price_change_5m":  round(price_change, 6),
             "absorption_bids":  round(large_bids, 4),
             "absorption_asks":  round(large_asks, 4),
-            "absorption_bull":  absorption_bull,
-            "absorption_bear":  absorption_bear,
+            "absorption_bull":  bool(absorption_bull),
+            "absorption_bear":  bool(absorption_bear),
             "momentum_decay":   round(decay, 4),
-            "micro_exhaustion": micro_exhaustion,
+            "micro_exhaustion": bool(micro_exhaustion),
         }
         _cache_set(cache_key, result)
         return result
@@ -282,12 +282,12 @@ async def quant_confirm(symbol: str, exchange) -> dict:
             "vol_ratio":     round(vol_ratio, 4),
             "rsi":           round(float(rsi), 2),
             "roc_5":         round(float(roc), 4),
-            "volume_climax": bool(vol_ratio > 2.0),
+            "volume_climax": bool(float(vol_ratio) > 2.0),
             "momentum_score": round(float(roc), 4),
-            "is_extreme":    bool(is_extreme),
-            "is_exhaustion": bool(is_exhaustion),
-            "is_overbought": bool(is_overbought),
-            "is_oversold":   bool(is_oversold),
+            "is_extreme":    bool(abs(float(z_score)) > 2.0),
+            "is_exhaustion": bool(float(vol_ratio) > 2.0 and abs(float(z_score)) > 1.5),
+            "is_overbought": bool(float(z_score) > 2.0 and float(rsi) > 70),
+            "is_oversold":   bool(float(z_score) < -2.0 and float(rsi) < 30),
         }
         _cache_set(cache_key, result)
         return result
