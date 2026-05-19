@@ -2,7 +2,7 @@
 import { useEffect, useState, useCallback } from 'react'
 
 const API = 'http://localhost:3020'
-const PARES = ['BTC/USDT','ETH/USDT','SOL/USDT','BNB/USDT','XRP/USDT','ADA/USDT','ZEC/USDT','SUI/USDT']
+const PARES_BASE = ['BTC/USDT','ETH/USDT','SOL/USDT','BNB/USDT','XRP/USDT','ADA/USDT','ZEC/USDT','SUI/USDT']
 
 function getToken() {
   if (typeof window !== 'undefined') return localStorage.getItem('finanmap_token') || ''
@@ -23,7 +23,7 @@ export default function StrategiesPage() {
   const [activating,   setActivating]   = useState<string | null>(null)
   const [msg,          setMsg]          = useState<{type:'ok'|'err', text:string} | null>(null)
   const [form, setForm] = useState({
-    nome: '', par: 'BTC/USDT', candles: '500', robos: '10', geracoes: '20'
+    nome: '', par: 'BTC/USDT', parCustom: '', candles: '500', robos: '10', geracoes: '20'
   })
   const [recomendacoes, setRecomendacoes] = useState<any[]>([])
   const [evolvingAI,    setEvolvingAI]    = useState(false)
@@ -62,7 +62,7 @@ export default function StrategiesPage() {
         headers,
         body: JSON.stringify({
           nome,
-          symbol:          form.par,
+          symbol:          form.par === '__custom__' ? form.parCustom : form.par,
           timeframe:       '1h',
           data_limit:      parseInt(form.candles),
           population_size: parseInt(form.robos),
@@ -231,8 +231,17 @@ export default function StrategiesPage() {
           <div>
             <label style={s.label}>PAR</label>
             <select style={{ ...s.input }} value={form.par} onChange={e => setForm(f => ({ ...f, par: e.target.value }))}>
-              {PARES.map(p => <option key={p} value={p} style={{ background: '#111' }}>{p}</option>)}
+              {PARES_BASE.map((p: string) => <option key={p} value={p} style={{ background: '#111' }}>{p}</option>)}
+              <option value="__custom__">✏️ Digitar par...</option>
             </select>
+            {form.par === '__custom__' && (
+              <input
+                style={{ ...s.input, marginTop: '0.4rem' }}
+                placeholder="Ex: EDEN/USDT"
+                value={form.parCustom}
+                onChange={e => setForm(f => ({ ...f, parCustom: e.target.value.toUpperCase() }))}
+              />
+            )}
           </div>
           <div>
             <label style={s.label}>TIMEFRAME</label>
