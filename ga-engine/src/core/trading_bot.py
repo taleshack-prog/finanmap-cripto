@@ -167,6 +167,21 @@ class TradingBot:
                     f"≈ ${value_usdt:.2f} | Assumindo LONG @ ${price:,.2f}",
                     "WARNING"
                 )
+                # Registra trade no banco para rastrear fechamento
+                try:
+                    from src.services.trade_persistence import save_trade_open
+                    trade_id = await save_trade_open(
+                        strategy_id = self.config.strategy_id,
+                        symbol      = self.config.symbol,
+                        quantity    = total,
+                        entry_price = price,
+                        bot_id      = self.config.bot_id,
+                        user_id     = self.config.user_id,
+                    )
+                    self.state.open_trade_id = trade_id
+                    self._log(f"State recovery registrado no banco | trade_id={trade_id}", "INFO")
+                except Exception as te:
+                    self._log(f"State recovery save_trade erro: {te}", "WARNING")
         except Exception as e:
             self._log(f"State recovery erro (ignorado): {e}", "WARNING")
 
