@@ -598,6 +598,20 @@ class TradingBot:
         except Exception as e:
             size_usd = self.config.capital * kelly_adjusted
             self._log(f"Erro ao verificar USDT: {e} — usando capital configurado", "WARNING")
+        # Garante que stop loss nunca cria posição abaixo do mínimo NOTIONAL
+        # Binance mínimo: $10 para a maioria dos pares
+        MIN_NOTIONAL_BINANCE = 11.0  # $11 com margem de segurança
+        stop_pct = self.config.stop_loss_pct / 100
+        min_entry = MIN_NOTIONAL_BINANCE / (1 - stop_pct)
+
+        if size_usd < min_entry:
+            self._log(
+                f"Entrada muito pequena: ${size_usd:.2f} < ${min_entry:.2f} mínimo "
+                f"(stop {self.config.stop_loss_pct:.1f}% criaria posição abaixo do NOTIONAL) — bloqueando",
+                "WARNING"
+            )
+            return
+
         quantity  = round(size_usd / price, 6)
         self._log(
             f"Kelly sizing | WR={win_rate:.0%} R:R={rr_ratio:.1f} "
