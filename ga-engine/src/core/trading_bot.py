@@ -393,10 +393,8 @@ class TradingBot:
                     )
                     return
 
-                self._log(
-                    f"Z-Score VWAP | z={z_score:.2f} | signal={z_signal} | "
-                    f"VWAP=${zs['vwap'][-1]:,.2f if zs['vwap'][-1] else 0:.2f}"
-                )
+                vwap_val = zs['vwap'][-1] if zs['vwap'] and zs['vwap'][-1] else 0
+                self._log(f"Z-Score VWAP | z={z_score:.2f} | signal={z_signal} | VWAP=${vwap_val:,.2f}")
 
                 # CVD Real — fluxo real de compra/venda
                 # Especialmente importante para ETH e SOL
