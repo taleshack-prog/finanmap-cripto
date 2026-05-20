@@ -615,9 +615,10 @@ class TradingBot:
             self._log(f"Erro ao verificar USDT: {e} — usando capital configurado", "WARNING")
         # Garante que stop loss nunca cria posição abaixo do mínimo NOTIONAL
         # Binance mínimo: $10 para a maioria dos pares
-        MIN_NOTIONAL_BINANCE = 11.0  # $11 com margem de segurança
+        MIN_NOTIONAL_BINANCE = 15.0  # $15 mínimo — margem segura
         stop_pct = self.config.stop_loss_pct / 100
-        min_entry = MIN_NOTIONAL_BINANCE / (1 - stop_pct)
+        # Adiciona 10% extra para cobrir volatilidade intra-candle
+        min_entry = MIN_NOTIONAL_BINANCE / (1 - stop_pct - 0.10)
 
         if size_usd < min_entry:
             self._log(
