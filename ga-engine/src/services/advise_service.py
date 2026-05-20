@@ -44,7 +44,7 @@ async def _get_btc_network_health() -> dict:
     if cached: return cached
 
     try:
-        async with httpx.AsyncClient(timeout=8) as client:
+        async with httpx.AsyncClient(timeout=3) as client:
             r = await client.get("https://api.blockchain.info/stats")
             r.raise_for_status()
             d = r.json()
@@ -80,7 +80,7 @@ async def _get_mempool_stress() -> dict:
     if cached: return cached
 
     try:
-        async with httpx.AsyncClient(timeout=8) as client:
+        async with httpx.AsyncClient(timeout=3) as client:
             r = await client.get("https://mempool.space/api/mempool")
             r.raise_for_status()
             d = r.json()
@@ -118,7 +118,7 @@ async def _get_eth_gas_stress() -> dict:
     if cached: return cached
 
     try:
-        async with httpx.AsyncClient(timeout=8) as client:
+        async with httpx.AsyncClient(timeout=3) as client:
             r = await client.get("https://api.etherscan.io/api?module=gastracker&action=gasoracle")
             r.raise_for_status()
             gas = r.json().get("result", {})
