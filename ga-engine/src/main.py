@@ -248,19 +248,21 @@ async def _fetch_advise_background(symbol: str, strategy_id=None):
 async def advise_route(symbol: str = "BTC", strategy_id: Optional[str] = Query(None)):
     sym = symbol.upper()
     cached = _advise_api_cache.get(sym)
-    if cached and time.time() - cached["ts"] < 900:
+
+    # Sempre retorna cache se disponível (mesmo expirado)
+    if cached and cached.get("data"):
+        # Se expirado, busca em background mas retorna cache antigo imediatamente
+        if time.time() - cached["ts"] > 900:
+            asyncio.create_task(_fetch_advise_background(sym, strategy_id))
         return cached["data"]
-    if sym not in _advise_api_cache:
-        asyncio.create_task(_fetch_advise_background(sym, strategy_id))
-        return {
-            "symbol": sym, "score": 0.5, "color": "yellow",
-            "message": "Carregando dados on-chain...",
-            "timestamp": int(time.time()), "cached": False
-        }
-    try:
-        return await get_advise(sym, strategy_id)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+
+    # Primeira vez — retorna neutro e busca em background
+    asyncio.create_task(_fetch_advise_background(sym, strategy_id))
+    return {
+        "symbol": sym, "score": 0.5, "color": "yellow",
+        "message": "Carregando dados on-chain...",
+        "timestamp": int(time.time()), "cached": False
+    }
 
 
 # ─── ANÁLISE COMPLETA (4 camadas) ───────────────────────────
