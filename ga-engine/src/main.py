@@ -236,13 +236,19 @@ async def onchain_score_route(symbol: str = "BTC"):
 
 
 _advise_api_cache: dict = {}
+_advise_fetching: set  = set()
 
 async def _fetch_advise_background(symbol: str, strategy_id=None):
+    if symbol in _advise_fetching:
+        return  # já está sendo buscado — evita fetch duplicado
+    _advise_fetching.add(symbol)
     try:
         data = await get_advise(symbol, strategy_id)
         _advise_api_cache[symbol] = {"ts": time.time(), "data": data}
     except Exception as e:
         logger.warning(f"Advise background {symbol}: {e}")
+    finally:
+        _advise_fetching.discard(symbol)
 
 @app.get("/advise/{symbol}")
 async def advise_route(symbol: str = "BTC", strategy_id: Optional[str] = Query(None)):
