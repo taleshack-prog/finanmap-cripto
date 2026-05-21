@@ -37,7 +37,7 @@ async def restore_active_bots():
                 return
 
             # Limita restauração a 8 bots máximo
-            estrategias = estrategias[:8]
+            estrategias = estrategias[:10]
             logger.info(f"Restaurando {len(estrategias)} bots...")
             restored = 0
 
