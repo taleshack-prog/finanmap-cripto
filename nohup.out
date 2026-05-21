@@ -1,1 +1,2 @@
 /home/tales/Downloads/finanmap-cripto/scripts/watchdog.sh, linha 7: 1686297 Morto                   uvicorn src.main:app --port 8110 >> $LOG 2>&1
+/home/tales/Downloads/finanmap-cripto/scripts/watchdog.sh, linha 7: 2455796 Morto                   uvicorn src.main:app --port 8110 >> $LOG 2>&1

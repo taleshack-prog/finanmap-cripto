@@ -607,6 +607,11 @@ class TradingBot:
                 capital_efetivo = min(usdt_free * 0.9, self.config.capital * 1.1)
                 self._log(f"Capital aumentado 10% | WR={win_rate:.0f}% > 60%")
             size_usd  = min(capital_efetivo * kelly_adjusted, max_size)
+            # Garante tamanho mínimo de $15 independente do Kelly
+            MIN_SIZE_USD = 15.0
+            if size_usd < MIN_SIZE_USD and usdt_free >= MIN_SIZE_USD:
+                size_usd = MIN_SIZE_USD
+                self._log(f"Kelly muito pequeno — usando mínimo ${MIN_SIZE_USD:.0f}")
             if size_usd < 5.0:
                 self._log(f"USDT insuficiente: ${usdt_free:.2f} livre — mínimo $5", "WARNING")
                 return
