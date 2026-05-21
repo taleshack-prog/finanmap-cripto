@@ -52,7 +52,7 @@ class OrderExecutor:
                     "apiKey":          api_key,
                     "secret":          api_secret,
                     "enableRateLimit": True,
-                    "options":         { "defaultType": "spot" },
+                    "options":         { "defaultType": "spot", "fetchCurrencies": False },
                 })
                 logger.info(f"OrderExecutor conectado à {exchange} (MODO REAL)")
             except Exception as e:
