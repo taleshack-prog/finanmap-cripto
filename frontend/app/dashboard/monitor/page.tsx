@@ -75,7 +75,7 @@ export default function MonitorPage() {
 
   useEffect(() => {
     fetchBots()
-    const interval = setInterval(fetchBots, 30000)
+    const interval = setInterval(fetchBots, 60000)
     return () => clearInterval(interval)
   }, [fetchBots])
 
