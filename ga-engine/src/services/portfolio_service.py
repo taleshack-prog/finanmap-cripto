@@ -74,6 +74,7 @@ def get_binance_balances(api_key: str, secret: str) -> list:
             "options": {
                 "defaultType": "spot",
                 "fetchTickerQuote": False,
+                "fetchCurrencies": False,
             }
         })
 
@@ -186,7 +187,7 @@ def get_binance_balances_fast(api_key: str, secret: str) -> list:
     exchange = ccxt.binance({
         "apiKey": api_key, "secret": secret,
         "enableRateLimit": True, "timeout": 10000,
-        "options": {"defaultType": "spot", "fetchTickerQuote": False}
+        "options": {"defaultType": "spot", "fetchTickerQuote": False, "fetchCurrencies": False}
     })
 
     # Busca só saldo spot
@@ -228,7 +229,10 @@ def get_binance_balances_full(api_key: str, secret: str) -> list:
 
 def get_prices_for_symbols(symbols: list) -> dict:
     """Busca preços atuais para lista de símbolos"""
-    exchange = ccxt.binance({"enableRateLimit": True})
+    exchange = ccxt.binance({
+        "enableRateLimit": True, "timeout": 10000,
+        "options": {"defaultType": "spot", "fetchCurrencies": False}
+    })
     prices = {}
     for symbol in symbols:
         if symbol in STABLECOINS:

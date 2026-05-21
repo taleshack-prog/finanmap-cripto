@@ -583,7 +583,7 @@ async def reversion_signal_endpoint(symbol: str = Query("BTC/USDT")):
         exchange = ccxt.binance({
             "apiKey": BINANCE_KEY, "secret": BINANCE_SECRET,
             "enableRateLimit": True, "timeout": 10000,
-            "options": {"defaultType": "spot"}
+            "options": {"defaultType": "spot", "fetchCurrencies": False}
         })
         return await get_reversion_signal(symbol, exchange)
     except Exception as e:

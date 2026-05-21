@@ -116,7 +116,7 @@ async def scan_market(
                 "secret":          secret,
                 "enableRateLimit": True,
                 "timeout":         15000,
-                "options":         {"defaultType": "spot"},
+                "options":         {"defaultType": "spot", "fetchCurrencies": False},
             })
 
             logger.info("MarketScan: buscando tickers...")
