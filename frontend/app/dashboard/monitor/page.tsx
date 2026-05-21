@@ -1,7 +1,6 @@
 'use client'
 import { useEffect, useState, useCallback } from 'react'
 
-const API = 'http://localhost:3020'
 const GA  = 'http://localhost:8110'
 
 const glass = (accent = 'rgba(124,58,255,0.2)') => ({
@@ -9,10 +8,7 @@ const glass = (accent = 'rgba(124,58,255,0.2)') => ({
   backdropFilter: 'blur(20px)', borderRadius: '8px', padding: '1.25rem',
 } as React.CSSProperties)
 
-function getToken() {
-  if (typeof window !== 'undefined') return localStorage.getItem('finanmap_token') || ''
-  return ''
-}
+
 
 interface BotStatus {
   bot_id: string; strategy_id: string; symbol: string; timeframe: string
@@ -257,7 +253,7 @@ export default function MonitorPage() {
 
                           {/* Breakdown scores */}
                           <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                            {Object.entries(adv.scores).map(([key, val]) => {
+                            {Object.entries(adv.scores || {}).map(([key, val]) => {
                               const norm = (val + 1) / 2
                               const c    = norm > 0.6 ? '#00ff88' : norm < 0.4 ? '#ff4444' : '#f59e0b'
                               return (
