@@ -665,6 +665,14 @@ class TradingBot:
                 bot_id=self.config.bot_id,
             )
             self._log(f"Posição aberta | Exec: ${self.state.entry_price:,.2f} | ID: {result.order_id}")
+            # Coloca OCO na Binance — stop e take profit automáticos
+            asyncio.create_task(self.executor.place_oco_orders(
+                symbol          = self.config.symbol,
+                quantity        = self.state.position_size,
+                take_profit_pct = self.config.take_profit_pct,
+                stop_loss_pct   = self.config.stop_loss_pct,
+                entry_price     = self.state.entry_price,
+            ))
         else:
             self._log(f"Falha ao abrir: {result.error}", "ERROR")
 

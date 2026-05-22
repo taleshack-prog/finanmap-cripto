@@ -171,6 +171,54 @@ class OrderExecutor:
         except Exception as e:
             return OrderResult(success=False, error=str(e))
 
+    async def place_oco_orders(
+        self,
+        symbol:          str,
+        quantity:        float,
+        take_profit_pct: float,
+        stop_loss_pct:   float,
+        entry_price:     float,
+    ) -> dict:
+        """
+        Coloca ordens OCO (take profit + stop loss) na Binance após compra.
+        Garante execução automática mesmo se o bot cair.
+        """
+        if not self.exchange or self.dry_run:
+            return {"success": False, "error": "dry_run ou exchange não conectada"}
+        try:
+            tp_price = round(entry_price * (1 + take_profit_pct / 100), 6)
+            sl_price = round(entry_price * (1 - stop_loss_pct / 100), 6)
+            sl_limit = round(sl_price * 0.995, 6)  # 0.5% abaixo do stop
+
+            # Cancela ordens abertas anteriores do mesmo símbolo
+            try:
+                self.exchange.cancel_all_orders(symbol)
+            except Exception:
+                pass
+
+            # Coloca OCO — take profit + stop loss simultaneamente
+            oco = self.exchange.create_order(
+                symbol = symbol,
+                type   = "oco",
+                side   = "sell",
+                amount = quantity,
+                price  = tp_price,   # take profit limit
+                params = {
+                    "stopPrice":            sl_price,  # stop trigger
+                    "stopLimitPrice":       sl_limit,  # stop limit
+                    "stopLimitTimeInForce": "GTC",
+                }
+            )
+            logger.info(
+                f"OCO colocada | {symbol} | "
+                f"TP=${tp_price:.4f} SL=${sl_price:.4f} | "
+                f"qty={quantity}"
+            )
+            return {"success": True, "tp": tp_price, "sl": sl_price, "order": oco}
+        except Exception as e:
+            logger.warning(f"OCO falhou ({symbol}): {e} — usando monitoramento por tick")
+            return {"success": False, "error": str(e)}
+
     def get_balance(self, currency: str = "USDT") -> float:
         """Retorna saldo disponível"""
         if self.dry_run or not self.exchange:
