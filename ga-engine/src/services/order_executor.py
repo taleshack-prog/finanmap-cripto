@@ -179,42 +179,36 @@ class OrderExecutor:
         stop_loss_pct:   float,
         entry_price:     float,
     ) -> dict:
-        """
-        Coloca ordens OCO (take profit + stop loss) na Binance após compra.
-        Garante execução automática mesmo se o bot cair.
-        """
         if not self.exchange or self.dry_run:
             return {"success": False, "error": "dry_run ou exchange não conectada"}
         try:
             tp_price = round(entry_price * (1 + take_profit_pct / 100), 6)
             sl_price = round(entry_price * (1 - stop_loss_pct / 100), 6)
-            sl_limit = round(sl_price * 0.995, 6)  # 0.5% abaixo do stop
+            sl_limit = round(sl_price * 0.995, 6)
 
-            # Cancela ordens abertas anteriores do mesmo símbolo
-            try:
-                self.exchange.cancel_all_orders(symbol)
-            except Exception:
-                pass
+            def _place():
+                try:
+                    self.exchange.cancel_all_orders(symbol)
+                except Exception:
+                    pass
+                return self.exchange.create_order(
+                    symbol = symbol,
+                    type   = "oco",
+                    side   = "sell",
+                    amount = quantity,
+                    price  = tp_price,
+                    params = {
+                        "stopPrice":            sl_price,
+                        "stopLimitPrice":       sl_limit,
+                        "stopLimitTimeInForce": "GTC",
+                    }
+                )
 
-            # Coloca OCO — take profit + stop loss simultaneamente
-            oco = self.exchange.create_order(
-                symbol = symbol,
-                type   = "oco",
-                side   = "sell",
-                amount = quantity,
-                price  = tp_price,   # take profit limit
-                params = {
-                    "stopPrice":            sl_price,  # stop trigger
-                    "stopLimitPrice":       sl_limit,  # stop limit
-                    "stopLimitTimeInForce": "GTC",
-                }
-            )
-            logger.info(
-                f"OCO colocada | {symbol} | "
-                f"TP=${tp_price:.4f} SL=${sl_price:.4f} | "
-                f"qty={quantity}"
-            )
-            return {"success": True, "tp": tp_price, "sl": sl_price, "order": oco}
+            import asyncio
+            loop = asyncio.get_event_loop()
+            oco = await loop.run_in_executor(None, _place)
+            logger.info(f"OCO colocada | {symbol} | TP=${tp_price:.4f} SL=${sl_price:.4f}")
+            return {"success": True, "tp": tp_price, "sl": sl_price}
         except Exception as e:
             logger.warning(f"OCO falhou ({symbol}): {e} — usando monitoramento por tick")
             return {"success": False, "error": str(e)}
