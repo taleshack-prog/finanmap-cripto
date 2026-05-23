@@ -1,6 +1,6 @@
 "use client"
 import { useEffect, useRef, useState, useCallback } from "react"
-import { createChart, ColorType, CrosshairMode, LineStyle } from "lightweight-charts"
+import { createChart, ColorType, CrosshairMode, LineStyle, CandlestickSeries, LineSeries } from "lightweight-charts"
 import { create } from "zustand"
 
 const GA = "http://localhost:8110"
@@ -69,10 +69,19 @@ export default function ASGMonitorPage() {
   // ─── Fetch candles iniciais ───────────────────────────────────────────
   useEffect(() => {
     const sym = symbol.replace("/", "%2F")
-    fetch(`${GA}/analyze/live?symbol=${sym}&timeframe=15m&limit=100`)
+    fetch(`${GA}/market/ohlcv?symbol=${sym}&timeframe=15m&limit=100`)
       .then(r => r.json())
       .then(d => {
-        if (d.candles) setCandles(d.candles)
+        if (d.timestamps && Array.isArray(d.timestamps)) {
+          const candles = d.timestamps.map((ts: number, i: number) => ({
+            time:  Math.floor(ts / 1000),
+            open:  d.opens[i],
+            high:  d.highs[i],
+            low:   d.lows[i],
+            close: d.closes[i],
+          }))
+          setCandles(candles)
+        }
       }).catch(() => {})
   }, [symbol])
 
@@ -95,17 +104,17 @@ export default function ASGMonitorPage() {
       height: 420,
     })
 
-    const cs = chart.addCandlestickSeries({
-      upColor:        "#00ff88",
-      downColor:      "#ff4444",
-      borderUpColor:  "#00ff88",
-      borderDownColor:"#ff4444",
-      wickUpColor:    "#00ff88",
-      wickDownColor:  "#ff4444",
+    const cs = chart.addSeries(CandlestickSeries, {
+      upColor:         "#00ff88",
+      downColor:       "#ff4444",
+      borderUpColor:   "#00ff88",
+      borderDownColor: "#ff4444",
+      wickUpColor:     "#00ff88",
+      wickDownColor:   "#ff4444",
     })
 
     // Linha Azul ASG
-    const asg = chart.addLineSeries({
+    const asg = chart.addSeries(LineSeries, {
       color:     "#00d4ff",
       lineWidth: 2,
       lineStyle: LineStyle.Solid,
@@ -117,7 +126,7 @@ export default function ASGMonitorPage() {
     const rvpStyles = [LineStyle.Dashed, LineStyle.Dashed, LineStyle.Dashed, LineStyle.Dashed, LineStyle.Dotted, LineStyle.Dotted]
     const rvpTitles = ["RVP+1","RVP-1","RVP+2","RVP-2","RVP+3","RVP-3"]
     const lines = rvpTitles.map((title, i) =>
-      chart.addLineSeries({ color: rvpColors[i], lineWidth: 1, lineStyle: rvpStyles[i], title, lastValueVisible: false })
+      chart.addSeries(LineSeries, { color: rvpColors[i], lineWidth: 1, lineStyle: rvpStyles[i], title, lastValueVisible: false })
     )
 
     chartObj.current     = chart
