@@ -15,3 +15,6 @@
 /home/tales/Downloads/finanmap-cripto/scripts/watchdog.sh, linha 7: 845943 Morto                   uvicorn src.main:app --port 8110 >> $LOG 2>&1
 /home/tales/Downloads/finanmap-cripto/scripts/watchdog.sh, linha 7: 926045 Morto                   curl -s http://localhost:8110/status > /dev/null 2>&1
 /home/tales/Downloads/finanmap-cripto/scripts/watchdog.sh, linha 7: 928961 Morto                   uvicorn src.main:app --port 8110 >> $LOG 2>&1
+/home/tales/Downloads/finanmap-cripto/scripts/watchdog.sh, linha 7: 926616 Morto                   uvicorn src.main:app --port 8110 >> $LOG 2>&1
+/home/tales/Downloads/finanmap-cripto/scripts/watchdog.sh, linha 7: 961446 Morto                   uvicorn src.main:app --port 8110 >> $LOG 2>&1
+/home/tales/Downloads/finanmap-cripto/scripts/watchdog.sh, linha 7: 963343 Morto                   uvicorn src.main:app --port 8110 >> $LOG 2>&1

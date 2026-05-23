@@ -544,9 +544,32 @@ async def market_ticker(symbol: str = Query("BTC/USDT"), exchange: str = Query("
     except Exception as e: raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/market/ohlcv")
-async def market_ohlcv(symbol: str = Query("BTC/USDT"), timeframe: str = Query("1h"), limit: int = Query(100), exchange: str = Query("binance")):
-    try: return get_ohlcv(symbol, timeframe, limit, exchange, BINANCE_KEY, BINANCE_SECRET)
-    except Exception as e: raise HTTPException(status_code=400, detail=str(e))
+async def market_ohlcv(
+    symbol:    str = Query("BTC/USDT"),
+    timeframe: str = Query("15m"),
+    limit:     int = Query(100),
+    exchange:  str = Query("binance"),
+):
+    """Retorna candles OHLCV para o monitor gráfico ASG."""
+    try:
+        loop = asyncio.get_event_loop()
+        ohlcv = await loop.run_in_executor(
+            None, lambda: get_ohlcv(symbol, timeframe, limit, exchange, BINANCE_KEY, BINANCE_SECRET)
+        )
+        return {
+            "symbol":     symbol,
+            "timeframe":  timeframe,
+            "exchange":   exchange,
+            "timestamps": ohlcv.get("timestamps", []),
+            "opens":      ohlcv.get("opens",      []),
+            "highs":      ohlcv.get("highs",      []),
+            "lows":       ohlcv.get("lows",       []),
+            "closes":     ohlcv.get("closes",     []),
+            "volumes":    ohlcv.get("volumes",    []),
+            "count":      len(ohlcv.get("closes", [])),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/market/orderbook")
 async def market_orderbook(symbol: str = Query("BTC/USDT"), limit: int = Query(20), exchange: str = Query("binance")):
