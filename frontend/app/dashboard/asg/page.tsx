@@ -37,7 +37,7 @@ const useMonitor = create<MonitorStore>((set) => ({
 }))
 
 // ─── Símbolos disponíveis ──────────────────────────────────────────────────
-const SYMBOLS = ["ZEC/USDT","EDEN/USDT","NEAR/USDT","LUMIA/USDT","GTC/USDT","FIDA/USDT","KITE/USDT","ZBT/USDT","BTC/USDT","ETH/USDT"]
+const SYMBOLS = ["ZEC/USDT","NEAR/USDT","EDEN/USDT","LUMIA/USDT","GTC/USDT","FIDA/USDT","KITE/USDT","ZBT/USDT","STRK/USDT","AXS/USDT","BTC/USDT","ETH/USDT"]
 
 // ─── Componente principal ──────────────────────────────────────────────────
 export default function ASGMonitorPage() {
@@ -68,19 +68,20 @@ export default function ASGMonitorPage() {
 
   // ─── Fetch candles iniciais ───────────────────────────────────────────
   useEffect(() => {
-    const sym = symbol.replace("/", "%2F")
+    setCandles([])  // limpa candles ao trocar símbolo
+    const sym = encodeURIComponent(symbol)
     fetch(`${GA}/market/ohlcv?symbol=${sym}&timeframe=15m&limit=100`)
       .then(r => r.json())
       .then(d => {
         if (d.timestamps && Array.isArray(d.timestamps)) {
-          const candles = d.timestamps.map((ts: number, i: number) => ({
-            time:  Math.floor(ts / 1000),
+          const formatted = d.timestamps.map((ts: number, i: number) => ({
+            timestamp: ts,
             open:  d.opens[i],
             high:  d.highs[i],
             low:   d.lows[i],
             close: d.closes[i],
-          }))
-          setCandles(candles)
+          })).filter((c: any) => c.timestamp && !isNaN(c.timestamp))
+          setCandles(formatted)
         }
       }).catch(() => {})
   }, [symbol])
