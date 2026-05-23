@@ -530,6 +530,23 @@ class TradingBot:
                         "WARNING"
                     )
                     return
+                # Filtro ASG — Linha Azul como divisor direcional
+                try:
+                    from src.services.asg_filter import apply_asg_filter
+                    asg = apply_asg_filter(
+                        closes           = list(ohlcv["closes"]),
+                        current_price    = price,
+                        signal           = "BUY",
+                        cvd_score        = flow.cvd_score if flow else 0,
+                        aggression_ratio = flow.buy_pressure if flow else 0.5,
+                        price_change_5m  = 0.0,
+                        symbol           = self.config.symbol,
+                    )
+                    if asg["decision"] == "BLOCK":
+                        self._log(f"ASG BLOCK | {asg['rationale']}", "WARNING")
+                        return
+                except Exception as e:
+                    self._log(f"ASG erro (não bloqueia): {e}", "WARNING")
                 await self._open_position("long", price)
 
         # 7. Manutenção de posição aberta — técnica + quantitativa (SEM fluxo)
