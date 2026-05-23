@@ -3,7 +3,7 @@ FinanMap Cripto - GA Engine v7
 GA Population + Técnica + Fluxo + Quantitativa + On-Chain
 """
 
-from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict
@@ -39,6 +39,23 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 scheduler = AsyncIOScheduler(timezone="America/Sao_Paulo")
+
+class WSManager:
+    def __init__(self):
+        self.active: set = set()
+    async def connect(self, ws):
+        await ws.accept()
+        self.active.add(ws)
+    def disconnect(self, ws):
+        self.active.discard(ws)
+    async def broadcast(self, data: dict):
+        dead = set()
+        for ws in self.active:
+            try: await ws.send_json(data)
+            except: dead.add(ws)
+        self.active -= dead
+
+ws_manager = WSManager()
 
 app = FastAPI(
     title="FinanMap Cripto - GA Engine",
@@ -603,3 +620,111 @@ async def backtest(req: BacktestRequest):
         capital *= (1 + r); equity.append(round(capital, 2))
     wins = sum(1 for r in returns if r > 0)
     return {"total_return": round(((equity[-1]-req.initial_capital)/req.initial_capital)*100,2), "sharpe_ratio": round(calculate_sharpe_ratio(returns.tolist()),4), "sortino_ratio": round(calculate_sortino_ratio(returns.tolist()),4), "max_drawdown": round(calculate_max_drawdown(returns.tolist())*100,2), "num_trades": int(n), "win_rate": round(wins/n*100,2), "profit_factor": round(sum(r for r in returns if r>0)/abs(sum(r for r in returns if r<0)),2), "equity_curve": equity, "initial_capital": req.initial_capital, "final_capital": round(equity[-1],2)}
+
+
+# ─── WEBSOCKET MONITOR ASG/RVP ──────────────────────────────
+
+@app.websocket("/ws/monitor/{symbol}")
+async def ws_monitor(websocket: WebSocket, symbol: str = "BTC/USDT"):
+    """
+    WebSocket em tempo real para o Monitor Gráfico ASG/RVP.
+    Envia dados a cada 3 segundos por símbolo.
+    """
+    await ws_manager.connect(websocket)
+    sym = symbol.upper().replace("-", "/")
+    if "/" not in sym:
+        sym = f"{sym}/USDT"
+
+    try:
+        while True:
+            try:
+                # Busca dados do bot ativo para este símbolo
+                bot_status = None
+                for b in active_bots.values():
+                    if b.config.symbol == sym:
+                        bot_status = b.get_status()
+                        break
+
+                price = 0.0
+                if bot_status:
+                    price = bot_status.get("last_price", 0) or 0
+
+                # Busca dados técnicos do cache
+                from src.services.data_service import get_ohlcv_cached
+                ohlcv = get_ohlcv_cached(sym, "15m", 100, "binance")
+
+                closes = ohlcv.get("closes", []) if ohlcv else []
+                highs  = ohlcv.get("highs",  []) if ohlcv else []
+                lows   = ohlcv.get("lows",   []) if ohlcv else []
+
+                if not closes:
+                    await asyncio.sleep(3)
+                    continue
+
+                price = price or float(closes[-1])
+
+                # Linha Azul ASG (HMA 50)
+                from src.services.asg_filter import calculate_asg_line
+                linha_azul = calculate_asg_line(closes, period=50)
+                asg_bias   = "BULLISH" if price > linha_azul else "BEARISH"
+
+                # VWAP e RVP
+                vwap_val = float(np.mean(closes[-24:])) if len(closes) >= 24 else price
+                atr_arr  = [max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1]))
+                            for i in range(1, min(15, len(closes)))]
+                atr_val  = float(np.mean(atr_arr)) if atr_arr else price * 0.01
+                mult     = 1.0 if "BTC" in sym else 1.5
+
+                # Z-score
+                mean_20 = float(np.mean(closes[-20:])) if len(closes) >= 20 else price
+                std_20  = float(np.std(closes[-20:]))  if len(closes) >= 20 else 1
+                z_score = (price - mean_20) / std_20 if std_20 > 0 else 0
+
+                # CVD do cache
+                from src.services.cvd_service import get_cvd_cached
+                cvd_data     = get_cvd_cached(sym) or {}
+                cvd_score    = cvd_data.get("score", 0)
+                buy_pressure = cvd_data.get("buy_pressure", 0.5)
+
+                payload = {
+                    "symbol":        sym,
+                    "timestamp":     int(time.time()),
+                    "current_price": round(price, 6),
+                    "asg": {
+                        "linha_azul":   round(linha_azul, 6),
+                        "bias":         asg_bias,
+                        "distance_pct": round((price - linha_azul) / linha_azul * 100, 4),
+                    },
+                    "rvp": {
+                        "vwap":       round(vwap_val, 6),
+                        "rvp1_plus":  round(vwap_val + 0.5 * mult * atr_val, 6),
+                        "rvp1_minus": round(vwap_val - 0.5 * mult * atr_val, 6),
+                        "rvp2_plus":  round(vwap_val + 1.0 * mult * atr_val, 6),
+                        "rvp2_minus": round(vwap_val - 1.0 * mult * atr_val, 6),
+                        "rvp3_plus":  round(vwap_val + 1.5 * mult * atr_val, 6),
+                        "rvp3_minus": round(vwap_val - 1.5 * mult * atr_val, 6),
+                    },
+                    "micro": {
+                        "cvd_score":     round(float(cvd_score), 4),
+                        "buy_pressure":  round(float(buy_pressure), 4),
+                        "sell_pressure": round(1 - float(buy_pressure), 4),
+                        "divergence":    "NONE",
+                    },
+                    "quant": {
+                        "z_score":    round(float(z_score), 4),
+                        "exhaustion": bool(abs(z_score) > 2.5),
+                    },
+                    "bot_status": bot_status or {},
+                }
+
+                await websocket.send_json(payload)
+
+            except Exception as e:
+                logger.warning(f"WS monitor {sym}: {e}")
+
+            await asyncio.sleep(3)
+
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket)
+    except Exception:
+        ws_manager.disconnect(websocket)
