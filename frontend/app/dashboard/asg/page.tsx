@@ -50,6 +50,22 @@ export default function ASGMonitorPage() {
   const wsRef        = useRef<WebSocket | null>(null)
   const [candles, setCandles]   = useState<any[]>([])
   const [killPending, setKillPending] = useState(false)
+  const [loading, setLoading]   = useState(false)
+
+  const handleSymbolChange = (s: string) => {
+    if (s === symbol || loading) return
+    setLoading(true)
+    if (chartObj.current) {
+      chartObj.current.remove()
+      chartObj.current     = null
+      candleSeries.current = null
+      asgLine.current      = null
+      rvpLines.current     = []
+    }
+    setCandles([])
+    setSymbol(s)
+    setTimeout(() => setLoading(false), 500)
+  }
 
   // ─── WebSocket ────────────────────────────────────────────────────────
   const connectWS = useCallback((sym: string) => {
@@ -70,7 +86,7 @@ export default function ASGMonitorPage() {
   useEffect(() => {
     setCandles([])  // limpa candles ao trocar símbolo
     const sym = encodeURIComponent(symbol)
-    fetch(`${GA}/market/ohlcv?symbol=${sym}&timeframe=15m&limit=100`)
+    fetch(`${GA}/market/ohlcv?symbol=${sym}&timeframe=15m&limit=50`)
       .then(r => r.json())
       .then(d => {
         if (d.timestamps && Array.isArray(d.timestamps)) {
@@ -201,7 +217,7 @@ export default function ASGMonitorPage() {
           <span style={{ fontSize: "10px", letterSpacing: "4px", color: "#00d4ff" }}>⬡ ASG MONITOR</span>
           <div style={{ display: "flex", gap: "0.5rem" }}>
             {SYMBOLS.map(s => (
-              <button key={s} onClick={() => setSymbol(s)}
+              <button key={s} onClick={() => handleSymbolChange(s)}
                 style={{ padding: "0.2rem 0.6rem", fontSize: "9px", letterSpacing: "2px",
                   background: symbol === s ? "rgba(0,212,255,0.2)" : "rgba(255,255,255,0.05)",
                   border: `0.5px solid ${symbol === s ? "#00d4ff" : "rgba(255,255,255,0.1)"}`,
