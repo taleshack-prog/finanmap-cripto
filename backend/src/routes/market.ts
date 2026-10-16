@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express'
 import { PrismaClient } from '@prisma/client'
-import { v4 as uuidv4 } from 'uuid'
+const uuidv4 = () => crypto.randomUUID()
 
 const router = Router()
 const prisma = new PrismaClient()

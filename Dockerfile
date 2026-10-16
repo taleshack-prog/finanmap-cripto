@@ -1,23 +1,20 @@
 # Dockerfile — raiz do monorepo (Railway backend service)
-# Funciona com build context = raiz do repo (Root Directory = '/')
-# NÃO use Root Directory = '/backend' no Railway — o context precisa ser a raiz
+# Root Directory = '/' no Railway UI
 
 FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Deps do backend (paths relativos à raiz do repo)
 COPY backend/package*.json ./
 RUN npm install
 
-# Código + prisma
 COPY backend/ .
 
-# Build TypeScript
-RUN npm run build
-
-# Gera Prisma client
+# Gera Prisma client ANTES do build TypeScript
 RUN npx prisma generate
+
+# Compila TypeScript
+RUN npm run build
 
 # --- Runner ---
 FROM node:20-alpine AS runner
