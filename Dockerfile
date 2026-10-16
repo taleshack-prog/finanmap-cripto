@@ -1,11 +1,12 @@
 # Dockerfile — raiz do monorepo (Railway backend service)
-# Railway detecta este arquivo automaticamente e usa Docker em vez de Nixpacks
+# Funciona com build context = raiz do repo (Root Directory = '/')
+# NÃO use Root Directory = '/backend' no Railway — o context precisa ser a raiz
 
 FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Deps do backend
+# Deps do backend (paths relativos à raiz do repo)
 COPY backend/package*.json ./
 RUN npm install
 

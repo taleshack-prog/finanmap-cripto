@@ -1,9 +1,10 @@
 # railway.toml — raiz do monorepo
-# Usa o Dockerfile do backend explicitamente, evitando auto-detecção do Railpack
+# Root Directory no Railway UI deve ser '/' (raiz) para este Dockerfile funcionar
+# Se Root Directory = '/backend', use dockerfilePath = "backend/Dockerfile"
 
 [build]
 builder = "DOCKERFILE"
-dockerfilePath = "Dockerfile"
+dockerfilePath = "backend/Dockerfile"
 
 [deploy]
 healthcheckPath = "/api/status"

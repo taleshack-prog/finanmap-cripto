@@ -1,16 +1,18 @@
-# backend/Dockerfile — build com context da raiz do monorepo (Railway)
+# backend/Dockerfile — build com context = /backend (Root Directory = '/backend' no Railway)
+# Paths SEM prefixo 'backend/' porque o context JÁ É a pasta backend/
+
 FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Copia package.json do backend
-COPY backend/package*.json ./
+# Copia package.json (context é backend/, então sem prefixo)
+COPY package*.json ./
 
 # Instala TODAS as deps (incluindo devDeps para o build TypeScript)
 RUN npm install
 
-# Copia código do backend
-COPY backend/ .
+# Copia código
+COPY . .
 
 # Compila TypeScript
 RUN npm run build
@@ -24,7 +26,6 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
-# Copia apenas o necessário para runtime
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package*.json ./
