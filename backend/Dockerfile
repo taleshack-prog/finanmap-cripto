@@ -2,19 +2,29 @@
 FROM node:20-alpine AS builder
 
 WORKDIR /app
-# Copia apenas o subdiretório backend
-COPY backend/package*.json ./
-RUN npm ci
 
+# Copia package.json do backend
+COPY backend/package*.json ./
+
+# Instala TODAS as deps (incluindo devDeps para o build TypeScript)
+RUN npm install
+
+# Copia código do backend
 COPY backend/ .
+
+# Compila TypeScript
 RUN npm run build
+
+# Gera Prisma client
 RUN npx prisma generate
 
+# --- Runner ---
 FROM node:20-alpine AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
 
+# Copia apenas o necessário para runtime
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package*.json ./
