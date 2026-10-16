@@ -10,10 +10,10 @@ RUN npm install
 
 COPY backend/ .
 
-# Gera Prisma client ANTES do build TypeScript
-RUN npx prisma generate
+# DATABASE_URL fake só para prisma generate (não conecta, apenas gera tipos)
+ENV DATABASE_URL="postgresql://fake:fake@localhost:5432/fake"
 
-# Compila TypeScript
+RUN npx prisma generate
 RUN npm run build
 
 # --- Runner ---
