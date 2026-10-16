@@ -20,3 +20,10 @@ venv/
 .DS_Store
 *.swp
 coverage/
+
+# Deploy artifacts
+.env.production
+*.env.local
+.vercel
+logs/*.pid
+nohup.out
