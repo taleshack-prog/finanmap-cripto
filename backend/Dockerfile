@@ -1,11 +1,12 @@
-# backend/Dockerfile (substitui o existente)
+# backend/Dockerfile — build com context da raiz do monorepo (Railway)
 FROM node:20-alpine AS builder
 
 WORKDIR /app
-COPY package*.json ./
-RUN npm ci --only=production
+# Copia apenas o subdiretório backend
+COPY backend/package*.json ./
+RUN npm ci
 
-COPY . .
+COPY backend/ .
 RUN npm run build
 RUN npx prisma generate
 
