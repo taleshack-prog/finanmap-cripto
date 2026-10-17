@@ -1,0 +1,11 @@
+# nixpacks.toml — força instalação via pip e entrypoint correto
+# Railway usa este arquivo quando Nixpacks/Railpack é o builder
+
+[phases.setup]
+nixPkgs = ["python311", "gcc"]
+
+[phases.install]
+cmds = ["pip install --no-cache-dir -r requirements.txt"]
+
+[start]
+cmd = "uvicorn src.main:app --host 0.0.0.0 --port $PORT --workers 1"
