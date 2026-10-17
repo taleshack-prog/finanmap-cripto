@@ -5,6 +5,8 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
+RUN apk add --no-cache openssl
+
 COPY backend/package*.json ./
 RUN npm install
 
@@ -19,6 +21,9 @@ RUN npm run build
 # --- Runner ---
 FROM node:20-alpine AS runner
 WORKDIR /app
+
+# OpenSSL necessário para o Prisma migrate/query engine no Alpine
+RUN apk add --no-cache openssl
 
 ENV NODE_ENV=production
 
