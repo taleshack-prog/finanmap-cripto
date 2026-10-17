@@ -1,3 +1,8 @@
+# railway.toml — configuração do serviço BACKEND (Node.js/Express)
+# Este arquivo é lido pelo serviço cujo Root Directory = "/"
+# O serviço ga-engine (Root Directory = "/ga-engine") deve ter seu
+# builder configurado manualmente no Railway UI: Settings -> Build -> Dockerfile
+
 [build]
 builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"

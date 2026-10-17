@@ -1,11 +1,11 @@
-# nixpacks.toml — força instalação via pip e entrypoint correto
-# Railway usa este arquivo quando Nixpacks/Railpack é o builder
+# nixpacks.toml — Railway GA Engine (Python/FastAPI)
+# Lido quando Root Directory = /ga-engine e builder = Nixpacks/Railpack
 
 [phases.setup]
-nixPkgs = ["python311", "gcc"]
+nixPkgs = ["python311", "gcc", "libffi"]
 
 [phases.install]
 cmds = ["pip install --no-cache-dir -r requirements.txt"]
 
 [start]
-cmd = "uvicorn src.main:app --host 0.0.0.0 --port $PORT --workers 1"
+cmd = "uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1"
