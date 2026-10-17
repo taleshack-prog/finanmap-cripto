@@ -3,8 +3,8 @@ import { useEffect, useRef, useState, useCallback } from "react"
 import { createChart, ColorType, CrosshairMode, LineStyle, CandlestickSeries, LineSeries } from "lightweight-charts"
 import { create } from "zustand"
 
-const GA = "http://localhost:8110"
-const WS = "ws://localhost:8110"
+const GA = process.env.NEXT_PUBLIC_GA_URL || "http://localhost:8110"
+const WS = (process.env.NEXT_PUBLIC_GA_URL || "http://localhost:8110").replace("https://","wss://").replace("http://","ws://")
 
 // ─── Zustand Store ─────────────────────────────────────────────────────────
 interface MonitorData {

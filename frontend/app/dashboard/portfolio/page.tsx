@@ -1,8 +1,8 @@
 'use client'
 import { useEffect, useState } from 'react'
 
-const API = 'http://localhost:3020'
-const GA  = 'http://localhost:8110'
+const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3020'
+const GA  = process.env.NEXT_PUBLIC_GA_URL || 'http://localhost:8110'
 
 function getToken() {
   if (typeof window !== 'undefined') return localStorage.getItem('finanmap_token') || ''

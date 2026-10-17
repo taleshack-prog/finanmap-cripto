@@ -1,7 +1,7 @@
 'use client'
 import { useState } from 'react'
 
-const GA = 'http://localhost:8110'
+const GA = process.env.NEXT_PUBLIC_GA_URL || 'http://localhost:8110'
 
 const glass = (accent = 'rgba(124,58,255,0.2)') => ({
   background: 'rgba(255,255,255,0.02)', border: `0.5px solid ${accent}`,

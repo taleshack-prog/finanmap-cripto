@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useState, useCallback } from 'react'
 
-const API = 'http://localhost:3020'
+const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3020'
 const PARES_BASE = ['BTC/USDT','ETH/USDT','SOL/USDT','BNB/USDT','XRP/USDT','ADA/USDT','ZEC/USDT','SUI/USDT']
 
 function getToken() {

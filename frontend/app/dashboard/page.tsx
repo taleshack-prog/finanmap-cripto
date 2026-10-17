@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useState, useCallback } from 'react'
 
-const API = 'http://localhost:3020'
+const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3020'
 
 const glass = (accent = 'rgba(124,58,255,0.2)') => ({
   background: 'rgba(255,255,255,0.02)', border: `0.5px solid ${accent}`,
