@@ -15,12 +15,25 @@ const app  = express();
 const PORT = process.env.PORT || 3020;
 
 // Middleware
+const allowedOrigins = [
+  process.env.FRONTEND_URL || 'http://localhost:3010',
+  'http://localhost:3000',
+  'http://localhost:3020',
+  'http://localhost:3010',
+];
+
 app.use(cors({
-  origin: [
-    process.env.FRONTEND_URL || 'http://localhost:3010',
-    'http://localhost:3000',
-    'http://localhost:3020',
-  ]
+  origin: (origin, callback) => {
+    // Permite requisições sem origin (ex: curl, Postman)
+    if (!origin) return callback(null, true);
+    // Permite qualquer subdomínio vercel.app
+    if (origin.endsWith('.vercel.app')) return callback(null, true);
+    // Permite origins explicitamente configuradas
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    console.warn(`CORS bloqueado para origin: ${origin}`);
+    return callback(new Error(`Origin não permitida: ${origin}`));
+  },
+  credentials: true,
 }));
 app.use(express.json());
 
