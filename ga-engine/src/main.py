@@ -120,8 +120,8 @@ async def startup_event():
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3010", "http://localhost:3020"],
-    allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
+    allow_origins=["*"],  # Vercel + localhost
+    allow_credentials=False, allow_methods=["*"], allow_headers=["*"],
 )
 
 BINANCE_KEY    = os.getenv("BINANCE_API_KEY", "")
