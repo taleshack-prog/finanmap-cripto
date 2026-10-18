@@ -134,7 +134,7 @@ class TestBotStateRisk:
     def test_check_daily_risk_limits_blocks_after_limit(self):
         import datetime
         bot = self._bot()
-        today = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+        today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
         bot.state.last_reset_day = today  # já resetado hoje → não vai resetar
         bot.state.daily_pnl = -2.0   # perdeu 2R (> daily_loss_limit_r 1.5)
         result = bot._check_daily_risk_limits()
@@ -143,7 +143,7 @@ class TestBotStateRisk:
     def test_check_rvp_attempts_blocks_after_max(self):
         import datetime
         bot = self._bot()
-        today = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+        today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
         bot.state.last_reset_day = today
         bot.state.rvp_level_attempts["rvp_default"] = 2  # já usou 2
         result = bot._check_rvp_attempts("rvp_default")
