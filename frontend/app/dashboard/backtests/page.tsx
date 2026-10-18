@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 
 const GA = process.env.NEXT_PUBLIC_GA_URL || 'http://localhost:8110'
 
@@ -28,61 +28,119 @@ interface BacktestResult {
   criado_em:       string
 }
 
-const MOCK: BacktestResult[] = [
-  { id:'1', nome:'Trend Follow BTC 2024', par:'BTC/USDT', tipo:'trading',    periodo:'2024-01-01 → 2024-12-31', capital:10000, total_return:68.4,  sharpe_ratio:1.65, sortino_ratio:2.1,  max_drawdown:-18.3, num_trades:142, win_rate:67.6, profit_factor:2.4,  final_capital:16840, equity_curve:[10000,10800,9900,11200,10800,12400,11800,13200,12900,14500,15200,16100,15800,16840], status:'concluido', criado_em:'2024-01-15' },
-  { id:'2', nome:'Grid ETH Baixa Vol',    par:'ETH/USDT', tipo:'grid',       periodo:'2024-03-01 → 2024-09-30', capital:5000,  total_return:22.1,  sharpe_ratio:1.32, sortino_ratio:1.8,  max_drawdown:-8.5,  num_trades:89,  win_rate:71.9, profit_factor:2.1,  final_capital:6105,  equity_curve:[5000,5200,5100,5400,5300,5600,5500,5800,5700,6000,5900,6105],                       status:'concluido', criado_em:'2024-03-01' },
-  { id:'3', nome:'DCA Acumulação BTC',    par:'BTC/USDT', tipo:'dca',        periodo:'2023-01-01 → 2024-12-31', capital:24000, total_return:156.2, sharpe_ratio:1.10, sortino_ratio:1.4,  max_drawdown:-31.2, num_trades:24,  win_rate:58.3, profit_factor:1.8,  final_capital:61488, equity_curve:[24000,22000,20000,25000,28000,32000,29000,35000,40000,38000,45000,50000,55000,61488], status:'concluido', criado_em:'2023-01-01' },
-  { id:'4', nome:'Arb BNB Multi-Exchange',par:'BNB/USDT', tipo:'arbitragem', periodo:'2024-06-01 → 2024-12-31', capital:8000,  total_return:14.8,  sharpe_ratio:0.88, sortino_ratio:1.2,  max_drawdown:-5.2,  num_trades:310, win_rate:82.3, profit_factor:1.6,  final_capital:9184,  equity_curve:[8000,8200,8400,8300,8600,8800,8700,9000,9100,9000,9200,9184],                       status:'concluido', criado_em:'2024-06-01' },
-]
+// ── data persistida em localStorage (por sessão de browser) ──────────────────
+const LS_KEY = 'finanmap_backtests_v1'
+
+function loadSaved(): BacktestResult[] {
+  try {
+    const raw = localStorage.getItem(LS_KEY)
+    if (raw) return JSON.parse(raw) as BacktestResult[]
+  } catch { /* localStorage bloqueado em alguns contextos */ }
+  return []
+}
+
+function saveTo(list: BacktestResult[]) {
+  try { localStorage.setItem(LS_KEY, JSON.stringify(list)) } catch { /* ignore */ }
+}
+
+// data padrão: últimos 180 dias
+function defaultDates() {
+  const end   = new Date()
+  const start = new Date(end.getTime() - 180 * 86_400_000)
+  const fmt   = (d: Date) => d.toISOString().split('T')[0]
+  return { inicio: fmt(start), fim: fmt(end) }
+}
 
 export default function BacktestsPage() {
-  const [backtests, setBacktests] = useState<BacktestResult[]>(MOCK)
-  const [selected,  setSelected]  = useState<BacktestResult | null>(MOCK[0])
+  const [backtests, setBacktests] = useState<BacktestResult[]>([])
+  const [selected,  setSelected]  = useState<BacktestResult | null>(null)
   const [rodando,   setRodando]   = useState(false)
   const [showForm,  setShowForm]  = useState(false)
-  const [form,      setForm]      = useState({ nome: '', par: 'BTC/USDT', tipo: 'trading', capital: '10000', inicio: '2024-01-01', fim: '2024-12-31' })
+  const [gaOnline,  setGaOnline]  = useState<boolean | null>(null)
+
+  const { inicio: defInicio, fim: defFim } = defaultDates()
+  const [form, setForm] = useState({ nome: '', par: 'BTC/USDT', tipo: 'trading', capital: '10000', inicio: defInicio, fim: defFim })
+
+  // Carrega histórico salvo + verifica ga-engine
+  useEffect(() => {
+    const saved = loadSaved()
+    if (saved.length > 0) {
+      setBacktests(saved)
+      setSelected(saved[0])
+    }
+    // Ping ga-engine
+    fetch(`${GA}/status`)
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then(() => setGaOnline(true))
+      .catch(() => setGaOnline(false))
+  }, [])
 
   const rodarBacktest = async () => {
-    if (!form.nome) return
+    if (!form.nome.trim()) return
+    if (!form.inicio || !form.fim) return
     setRodando(true)
     setShowForm(false)
     const tempId = Date.now().toString()
     const novo: BacktestResult = {
-      id: tempId, nome: form.nome, par: form.par, tipo: form.tipo,
+      id: tempId, nome: form.nome.trim(), par: form.par, tipo: form.tipo,
       periodo: `${form.inicio} → ${form.fim}`,
-      capital: parseFloat(form.capital),
+      capital: parseFloat(form.capital) || 10000,
       total_return: 0, sharpe_ratio: 0, sortino_ratio: 0, max_drawdown: 0,
       num_trades: 0, win_rate: 0, profit_factor: 0, final_capital: 0,
       equity_curve: [], status: 'rodando', criado_em: new Date().toISOString().split('T')[0],
     }
-    setBacktests(prev => [novo, ...prev])
+    setBacktests(prev => { const u = [novo, ...prev]; saveTo(u); return u })
+    setSelected(novo)
 
     try {
       const r = await fetch(`${GA}/backtest`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ strategy_config: { tipo: form.tipo, par: form.par }, start_date: form.inicio, end_date: form.fim, initial_capital: parseFloat(form.capital) }),
+        body: JSON.stringify({
+          strategy_config: { tipo: form.tipo, par: form.par },
+          start_date: form.inicio,
+          end_date:   form.fim,
+          initial_capital: parseFloat(form.capital) || 10000,
+        }),
       })
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({ detail: `HTTP ${r.status}` }))
+        throw new Error(err.detail || `HTTP ${r.status}`)
+      }
       const data = await r.json()
       const resultado: BacktestResult = {
         ...novo,
-        total_return:  data.total_return,
-        sharpe_ratio:  data.sharpe_ratio,
-        sortino_ratio: data.sortino_ratio,
-        max_drawdown:  data.max_drawdown,
-        num_trades:    data.num_trades,
-        win_rate:      data.win_rate,
-        profit_factor: data.profit_factor,
-        final_capital: data.final_capital,
-        equity_curve:  data.equity_curve || [],
+        total_return:  data.total_return  ?? 0,
+        sharpe_ratio:  data.sharpe_ratio  ?? 0,
+        sortino_ratio: data.sortino_ratio ?? 0,
+        max_drawdown:  data.max_drawdown  ?? 0,
+        num_trades:    data.num_trades    ?? 0,
+        win_rate:      data.win_rate      ?? 0,
+        profit_factor: data.profit_factor ?? 0,
+        final_capital: data.final_capital ?? novo.capital,
+        equity_curve:  data.equity_curve  ?? [],
         status:        'concluido',
       }
-      setBacktests(prev => prev.map(b => b.id === tempId ? resultado : b))
+      setBacktests(prev => { const u = prev.map(b => b.id === tempId ? resultado : b); saveTo(u); return u })
       setSelected(resultado)
-    } catch {
-      setBacktests(prev => prev.map(b => b.id === tempId ? { ...b, status: 'erro' as const } : b))
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setBacktests(prev => {
+        const u = prev.map(b => b.id === tempId ? { ...b, status: 'erro' as const, nome: `${b.nome} — ${msg}` } : b)
+        saveTo(u)
+        return u
+      })
     }
     setRodando(false)
+  }
+
+  const deletarBacktest = (id: string) => {
+    setBacktests(prev => {
+      const u = prev.filter(b => b.id !== id)
+      saveTo(u)
+      if (selected?.id === id) setSelected(u[0] ?? null)
+      return u
+    })
   }
 
   const bt = selected
@@ -97,8 +155,11 @@ export default function BacktestsPage() {
         {/* Header */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '1.5rem' }}>
           <div>
-            <div style={{ fontSize: '10px', letterSpacing: '6px', color: 'rgba(255,0,128,0.5)', marginBottom: '4px' }}>SIMULAÇÃO HISTÓRICA</div>
+            <div style={{ fontSize: '10px', letterSpacing: '6px', color: 'rgba(255,0,128,0.5)', marginBottom: '4px' }}>SIMULAÇÃO HISTÓRICA REAL</div>
             <h1 style={{ fontSize: '1.4rem', fontWeight: 700, margin: 0, background: 'linear-gradient(135deg, #ff0080, #7c3aff)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Backtests</h1>
+            <div style={{ fontSize: '9px', marginTop: '4px', color: gaOnline === null ? 'rgba(255,255,255,0.3)' : gaOnline ? '#00ff88' : '#ff4444' }}>
+              {gaOnline === null ? '● verificando ga-engine...' : gaOnline ? '● ga-engine online — dados reais Binance' : '● ga-engine offline — verifique Railway'}
+            </div>
           </div>
           <button onClick={() => setShowForm(!showForm)} style={{
             padding: '0.7rem 1.5rem', fontSize: '10px', letterSpacing: '3px',
@@ -152,20 +213,42 @@ export default function BacktestsPage() {
 
           {/* Lista */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-            {backtests.map(b => (
-              <div key={b.id} onClick={() => setSelected(b)} style={{
-                ...glass(selected?.id === b.id ? 'rgba(255,0,128,0.3)' : 'rgba(255,255,255,0.06)'),
-                cursor: 'pointer', borderLeft: `3px solid ${selected?.id === b.id ? '#ff0080' : 'transparent'}`,
-                padding: '0.85rem', transition: 'all 0.2s',
-              }}>
-                <div style={{ fontSize: '11px', fontWeight: 700, color: '#fff', marginBottom: '4px' }}>{b.nome}</div>
-                <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.35)', marginBottom: '6px' }}>{b.par} · {b.tipo}</div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ fontSize: '12px', fontWeight: 700, color: b.total_return >= 0 ? '#00ff88' : '#ff4444' }}>
-                    {b.status === 'rodando' ? '⟳' : b.status === 'erro' ? '✕' : `${b.total_return >= 0 ? '+' : ''}${b.total_return.toFixed(1)}%`}
-                  </span>
-                  <span style={{ fontSize: '9px', color: 'rgba(255,255,255,0.25)' }}>{b.criado_em}</span>
+            {backtests.length === 0 && (
+              <div style={{ ...glass('rgba(255,255,255,0.06)'), textAlign: 'center', padding: '2rem 1rem' }}>
+                <div style={{ fontSize: '2rem', marginBottom: '0.5rem', opacity: 0.3 }}>📊</div>
+                <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.3)', lineHeight: 1.6 }}>
+                  Nenhum backtest ainda.<br/>
+                  Clique em <strong style={{ color: 'rgba(255,0,128,0.7)' }}>▸ NOVO BACKTEST</strong><br/>
+                  para rodar dados reais da Binance.
                 </div>
+              </div>
+            )}
+            {backtests.map(b => (
+              <div key={b.id} style={{ position: 'relative' }}>
+                <div onClick={() => setSelected(b)} style={{
+                  ...glass(selected?.id === b.id ? 'rgba(255,0,128,0.3)' : 'rgba(255,255,255,0.06)'),
+                  cursor: 'pointer', borderLeft: `3px solid ${selected?.id === b.id ? '#ff0080' : 'transparent'}`,
+                  padding: '0.85rem', paddingRight: '2.2rem', transition: 'all 0.2s',
+                }}>
+                  <div style={{ fontSize: '11px', fontWeight: 700, color: '#fff', marginBottom: '4px' }}>{b.nome.replace(/ — .*/, '')}</div>
+                  <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.35)', marginBottom: '6px' }}>{b.par} · {b.tipo}</div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ fontSize: '12px', fontWeight: 700, color: b.status === 'erro' ? '#ff4444' : b.total_return >= 0 ? '#00ff88' : '#ff4444' }}>
+                      {b.status === 'rodando' ? '⟳' : b.status === 'erro' ? '✕ erro' : `${b.total_return >= 0 ? '+' : ''}${b.total_return.toFixed(1)}%`}
+                    </span>
+                    <span style={{ fontSize: '9px', color: 'rgba(255,255,255,0.25)' }}>{b.criado_em}</span>
+                  </div>
+                </div>
+                {/* Botão deletar */}
+                <button
+                  onClick={e => { e.stopPropagation(); deletarBacktest(b.id) }}
+                  title="Deletar backtest"
+                  style={{
+                    position: 'absolute', top: '0.5rem', right: '0.5rem',
+                    background: 'none', border: 'none', color: 'rgba(255,255,255,0.2)',
+                    cursor: 'pointer', fontSize: '12px', lineHeight: 1, padding: '2px 4px',
+                  }}
+                >✕</button>
               </div>
             ))}
           </div>

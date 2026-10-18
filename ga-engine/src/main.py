@@ -956,15 +956,197 @@ async def flow_check(req: FlowCheckRequest):
 
 @app.post("/backtest")
 async def backtest(req: BacktestRequest):
-    np.random.seed(123)
-    n = np.random.randint(30, 80)
-    returns = np.random.normal(0.002, 0.025, n)
-    capital = req.initial_capital
-    equity  = [capital]
-    for r in returns:
-        capital *= (1 + r); equity.append(round(capital, 2))
-    wins = sum(1 for r in returns if r > 0)
-    return {"total_return": round(((equity[-1]-req.initial_capital)/req.initial_capital)*100,2), "sharpe_ratio": round(calculate_sharpe_ratio(returns.tolist()),4), "sortino_ratio": round(calculate_sortino_ratio(returns.tolist()),4), "max_drawdown": round(calculate_max_drawdown(returns.tolist())*100,2), "num_trades": int(n), "win_rate": round(wins/n*100,2), "profit_factor": round(sum(r for r in returns if r>0)/abs(sum(r for r in returns if r<0)),2), "equity_curve": equity, "initial_capital": req.initial_capital, "final_capital": round(equity[-1],2)}
+    """
+    Backtest real: busca OHLCV histórico via CCXT (Binance public, sem auth),
+    simula estratégia de cruzamento de médias ou DCA sobre os candles do período.
+    """
+    from src.services.data_service import get_ohlcv
+    import datetime as dt
+
+    # Parâmetros da estratégia
+    cfg      = req.strategy_config
+    symbol   = cfg.get("par", cfg.get("symbol", "BTC/USDT"))
+    tipo     = cfg.get("tipo", "trading")
+
+    # Converter datas para timestamps ms (UTC)
+    try:
+        t_start = int(dt.datetime.strptime(req.start_date, "%Y-%m-%d")
+                      .replace(tzinfo=dt.timezone.utc).timestamp() * 1000)
+        t_end   = int(dt.datetime.strptime(req.end_date,   "%Y-%m-%d")
+                      .replace(tzinfo=dt.timezone.utc).timestamp() * 1000)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Datas inválidas: {e}")
+
+    # Calcular quantidade de candles diários no período
+    dias   = max(1, (t_end - t_start) // (86_400_000))
+    limit  = min(dias + 2, 1000)  # máx 1000 candles por request CCXT
+
+    # Buscar OHLCV real — dados públicos, sem API key
+    try:
+        import ccxt
+        exchange = ccxt.binance({
+            "enableRateLimit": True,
+            "options": {"defaultType": "spot"},
+        })
+        raw = exchange.fetch_ohlcv(symbol, "1d", since=t_start, limit=limit)
+        if not raw:
+            raise HTTPException(status_code=404,
+                detail=f"Sem dados para {symbol} no período {req.start_date} → {req.end_date}")
+    except ccxt.BadSymbol:
+        raise HTTPException(status_code=400, detail=f"Par inválido: {symbol}")
+    except ccxt.NetworkError as e:
+        raise HTTPException(status_code=503, detail=f"Erro de rede Binance: {e}")
+    except ccxt.ExchangeError as e:
+        raise HTTPException(status_code=502, detail=f"Erro Binance: {e}")
+
+    # Filtrar apenas candles dentro do período solicitado
+    raw = [c for c in raw if t_start <= c[0] <= t_end]
+    if len(raw) < 5:
+        raise HTTPException(status_code=404,
+            detail=f"Dados insuficientes: apenas {len(raw)} candle(s) no período")
+
+    closes  = [c[4] for c in raw]
+    volumes = [c[5] for c in raw]
+    n       = len(closes)
+
+    # ── Simulação de estratégia ──────────────────────────────────────────────
+    capital    = req.initial_capital
+    equity     = [round(capital, 2)]
+    trade_rets = []
+    in_position = False
+    entry_price = 0.0
+    position_qty = 0.0
+    trades_won  = 0
+
+    if tipo == "dca":
+        # DCA: compra igual todo dia, realiza parcial no final
+        daily_buy   = capital / n
+        total_cost  = 0.0
+        total_coins = 0.0
+        for i, price in enumerate(closes):
+            coins = daily_buy / price
+            total_coins += coins
+            total_cost  += daily_buy
+            current_val  = total_coins * price
+            equity.append(round(current_val + capital - total_cost, 2))
+        final_val = total_coins * closes[-1]
+        ret = (final_val - capital) / capital
+        trade_rets = [ret / max(n, 1)] * n
+        num_trades = n
+
+    elif tipo in ("grid",):
+        # Grid: compra/vende em faixas de ±2%
+        grid_pct    = 0.02
+        last_action = closes[0]
+        for i in range(1, n):
+            chg = (closes[i] - last_action) / last_action
+            if chg <= -grid_pct:
+                # compra
+                qty = (capital * 0.1) / closes[i]
+                position_qty += qty
+                capital -= qty * closes[i]
+                last_action = closes[i]
+            elif chg >= grid_pct and position_qty > 0:
+                # vende
+                gain = position_qty * closes[i]
+                ret  = (closes[i] - last_action) / last_action
+                trade_rets.append(ret)
+                if ret > 0:
+                    trades_won += 1
+                capital += gain
+                position_qty = 0.0
+                last_action  = closes[i]
+            val = capital + position_qty * closes[i]
+            equity.append(round(val, 2))
+        num_trades = max(len(trade_rets), 1)
+
+    else:
+        # Trading / arbitragem: cruzamento SMA-10 x SMA-30 (ou fallback)
+        sma_fast = 10
+        sma_slow = min(30, n // 3)
+        if sma_slow < 5:
+            sma_slow = 5
+        sma_fast = min(sma_fast, sma_slow - 1) or 1
+
+        for i in range(n):
+            if i < sma_slow:
+                equity.append(round(capital + (position_qty * closes[i] if in_position else 0), 2))
+                continue
+            fast_avg = float(np.mean(closes[i-sma_fast:i]))
+            slow_avg = float(np.mean(closes[i-sma_slow:i]))
+
+            if fast_avg > slow_avg and not in_position:
+                # Sinal de compra
+                position_qty = (capital * 0.95) / closes[i]
+                capital      = capital * 0.05
+                entry_price  = closes[i]
+                in_position  = True
+
+            elif fast_avg < slow_avg and in_position:
+                # Sinal de venda
+                gain    = position_qty * closes[i]
+                ret_pct = (closes[i] - entry_price) / entry_price
+                trade_rets.append(ret_pct)
+                if ret_pct > 0:
+                    trades_won += 1
+                capital     = capital + gain
+                position_qty = 0.0
+                in_position  = False
+
+            cur_val = capital + (position_qty * closes[i] if in_position else 0)
+            equity.append(round(cur_val, 2))
+
+        # Fecha posição aberta no final
+        if in_position and position_qty > 0:
+            final_sell = position_qty * closes[-1]
+            ret_pct    = (closes[-1] - entry_price) / entry_price
+            trade_rets.append(ret_pct)
+            if ret_pct > 0:
+                trades_won += 1
+            capital     = capital + final_sell
+            position_qty = 0.0
+            equity[-1]   = round(capital, 2)
+
+        num_trades = max(len(trade_rets), 1)
+
+    # ── Métricas ─────────────────────────────────────────────────────────────
+    final_capital = equity[-1]
+    total_return  = round(((final_capital - req.initial_capital) / req.initial_capital) * 100, 2)
+
+    rets_arr = np.array(trade_rets) if trade_rets else np.array([0.0])
+
+    sharpe   = round(calculate_sharpe_ratio(rets_arr.tolist()), 4)
+    sortino  = round(calculate_sortino_ratio(rets_arr.tolist()), 4)
+    max_dd   = round(calculate_max_drawdown(rets_arr.tolist()) * 100, 2)
+
+    gains   = [r for r in trade_rets if r > 0]
+    losses  = [r for r in trade_rets if r < 0]
+    pf      = round(sum(gains) / abs(sum(losses)), 2) if losses and gains else (
+              1.0 if not losses else 0.0)
+    win_rate = round((trades_won / num_trades) * 100, 2) if num_trades else 0.0
+
+    # Equity curve normalizada (máx 60 pontos para o frontend)
+    step       = max(1, len(equity) // 60)
+    eq_sampled = equity[::step]
+    if equity[-1] not in eq_sampled:
+        eq_sampled.append(equity[-1])
+
+    return {
+        "total_return":   total_return,
+        "sharpe_ratio":   sharpe,
+        "sortino_ratio":  sortino,
+        "max_drawdown":   max_dd,
+        "num_trades":     num_trades,
+        "win_rate":       win_rate,
+        "profit_factor":  pf,
+        "equity_curve":   eq_sampled,
+        "initial_capital": req.initial_capital,
+        "final_capital":  round(final_capital, 2),
+        "symbol":         symbol,
+        "period":         f"{req.start_date} → {req.end_date}",
+        "candles_used":   n,
+        "tipo":           tipo,
+    }
 
 
 # ─── WEBSOCKET MONITOR ASG/RVP ──────────────────────────────
