@@ -1,7 +1,14 @@
 """
-FinanMap Cripto - Trading Bot Core v2
-Robô autônomo com análise técnica (GA) + filtro de fluxo em tempo real
-Fluxo: order book pressure, volume spike, spread analysis
+FinanMap Cripto - Trading Bot Core v3 (TDD v1.0)
+Regras de risco §5.3:
+  - Risco 0.25–0.5% do capital por trade
+  - Limite diário 1R–2R (pára bot no dia se atingido)
+  - Máximo 2 tentativas por nível RVP (evita martingale)
+  - RR mínimo 1:2 (stop_loss_pct × 2 ≤ take_profit_pct)
+  - Dias de notícia: trata RVP±2 como rompimento (não reversão)
+Convergência 3/3 (RF-09):
+  MACRO (RVP±2) + MICRO (CVD divergência/absorção) + QUANT (|z-score|>2.0)
+  2/3 = alerta; 1/3 = ignora
 """
 
 import asyncio
@@ -51,6 +58,12 @@ class BotConfig:
     min_volume_ratio:     float = 0.8    # volume mínimo vs média (evita mercado morto)
     flow_confirmation:    bool  = True   # exige confirmação do fluxo para abrir
 
+    # ── Regras de risco TDD §5.3 ─────────────────────────────
+    capital_pct:          float = 0.003  # risco por trade: 0.3% (0.25–0.5% §5.3)
+    daily_loss_limit_r:   float = 1.5    # limite diário em R (1R–2R §5.3)
+    max_rvp_attempts:     int   = 2      # máx tentativas por nível RVP §5.3
+    news_day_mode:        bool  = False  # dias de notícia: RVP±2 = rompimento §5.3
+
 
 @dataclass
 class FlowData:
@@ -84,6 +97,20 @@ class BotState:
     errors:          int   = 0
     log:             list  = field(default_factory=list)
 
+    # ── Controle de risco intraday TDD §5.3 ───────────────────
+    daily_pnl:           float = 0.0   # PnL realizado no dia (em R)
+    daily_trades:        int   = 0     # trades no dia
+    daily_limit_hit:     bool  = False # True se limite diário atingido
+    rvp_level_attempts:  dict  = field(default_factory=dict)  # {rvp_level: count}
+    last_reset_day:      str   = ""    # data do último reset ("YYYY-MM-DD")
+    convergence_score:   int   = 0     # 0–3 camadas confirmadas (RF-09)
+
+    @property
+    def win_rate(self) -> float:
+        if self.total_trades == 0:
+            return 0.0
+        return self.winning_trades / self.total_trades * 100
+
 
 class TradingBot:
     """
@@ -103,6 +130,109 @@ class TradingBot:
         )
         self._task: Optional[asyncio.Task] = None
         self.open_trade_id: Optional[str] = None
+
+    # ─── CONTROLE DE RISCO DIÁRIO TDD §5.3 ──────────────────────
+
+    def _reset_daily_state_if_needed(self):
+        """Reseta contadores de risco ao virar o dia (00:00 UTC)."""
+        import datetime
+        today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+        if self.state.last_reset_day != today:
+            if self.state.last_reset_day:  # não é a primeira vez
+                self._log(
+                    f"Reset diário | PnL ontem={self.state.daily_pnl:+.4f}R | "
+                    f"trades={self.state.daily_trades} | "
+                    f"limite_atingido={self.state.daily_limit_hit}"
+                )
+            self.state.daily_pnl           = 0.0
+            self.state.daily_trades        = 0
+            self.state.daily_limit_hit     = False
+            self.state.rvp_level_attempts  = {}
+            self.state.last_reset_day      = today
+
+    def _check_daily_risk_limits(self) -> bool:
+        """
+        Retorna True se pode abrir nova posição.
+        Bloqueia se limite diário de 1R–2R foi atingido (TDD §5.3).
+        """
+        self._reset_daily_state_if_needed()
+
+        if self.state.daily_limit_hit:
+            self._log(
+                f"LIMITE DIÁRIO ATINGIDO | PnL={self.state.daily_pnl:+.4f}R — "
+                f"sem novas operações hoje",
+                "WARNING"
+            )
+            return False
+
+        # Verifica se PnL realizado do dia atingiu limite (negativo = perda)
+        if self.state.daily_pnl <= -self.config.daily_loss_limit_r:
+            self.state.daily_limit_hit = True
+            self._log(
+                f"LIMITE DIÁRIO ATINGIDO: {self.state.daily_pnl:+.4f}R ≤ "
+                f"-{self.config.daily_loss_limit_r}R — fechando operações do dia",
+                "ERROR"
+            )
+            return False
+
+        return True
+
+    def _check_rvp_attempts(self, rvp_level: str) -> bool:
+        """
+        Retorna True se ainda pode tentar neste nível RVP.
+        Limita a 2 tentativas por nível RVP por dia (TDD §5.3).
+        """
+        self._reset_daily_state_if_needed()
+        count = self.state.rvp_level_attempts.get(rvp_level, 0)
+        if count >= self.config.max_rvp_attempts:
+            self._log(
+                f"MAX TENTATIVAS RVP | nivel={rvp_level} | "
+                f"{count}/{self.config.max_rvp_attempts} — bloqueando",
+                "WARNING"
+            )
+            return False
+        return True
+
+    def _register_rvp_attempt(self, rvp_level: str):
+        """Registra tentativa em um nível RVP."""
+        self.state.rvp_level_attempts[rvp_level] = \
+            self.state.rvp_level_attempts.get(rvp_level, 0) + 1
+
+    def _update_daily_pnl(self, pnl_pct: float):
+        """
+        Atualiza PnL diário em unidades R após fechar posição.
+        R = risco por trade = stop_loss_pct × capital_pct
+        """
+        r_unit = self.config.stop_loss_pct / 100 * self.config.capital_pct
+        if r_unit > 0:
+            pnl_r = pnl_pct / 100 / r_unit
+        else:
+            pnl_r = 0.0
+        self.state.daily_pnl    += pnl_r
+        self.state.daily_trades += 1
+        self._log(
+            f"PnL diário | trade={pnl_pct:+.2f}% = {pnl_r:+.4f}R | "
+            f"acumulado={self.state.daily_pnl:+.4f}R ({self.state.daily_trades} trades)"
+        )
+
+    def _calculate_position_size(self, price: float) -> float:
+        """
+        Calcula tamanho da posição com base no risco configurado (TDD §5.3).
+        Risco = capital × capital_pct (0.25–0.5%)
+        Tamanho = risco / stop_loss_pct
+        """
+        risk_amount = self.config.capital * self.config.capital_pct
+        if self.config.stop_loss_pct > 0:
+            position_value = risk_amount / (self.config.stop_loss_pct / 100)
+        else:
+            position_value = risk_amount * 10  # fallback
+        qty = position_value / price
+        self._log(
+            f"Position size | capital={self.config.capital:.2f} | "
+            f"risco={self.config.capital_pct*100:.2f}% = ${risk_amount:.2f} | "
+            f"stop={self.config.stop_loss_pct}% | qty={qty:.6f} | valor=${position_value:.2f}"
+        )
+        return qty
 
     def _log(self, msg: str, level: str = "INFO"):
         entry = {"ts": int(time.time()), "level": level, "msg": msg}
@@ -469,6 +599,12 @@ class TradingBot:
                     )
                     return
 
+                # Verifica limite de tentativas por nível RVP (TDD §5.3)
+                rvp_level = f"rvp_{rvp.get('zone', 'default')}"
+                if not self._check_rvp_attempts(rvp_level):
+                    return
+                self._register_rvp_attempt(rvp_level)
+
             except Exception as e:
                 self._log(f"RVP erro (não bloqueia): {e}", "WARNING")
 
@@ -490,6 +626,10 @@ class TradingBot:
                 return
 
         # 6. Decisão de entrada — técnica + fluxo (fluxo SÓ na entrada)
+        # Verifica limites de risco diário antes de qualquer entrada (TDD §5.3)
+        if tech_direction == "BUY" and self.state.position == "none" and not self._check_daily_risk_limits():
+            return
+
         if tech_direction == "BUY" and self.state.position == "none":
             # Sistema de Reversão Intraday — filtro adicional
             try:
@@ -509,6 +649,89 @@ class TradingBot:
             except Exception as e:
                 self._log(f"Reversão check erro (não bloqueia): {e}", "WARNING")
 
+            # ── Convergência 3/3 (RF-09 / TDD §3.5) ────────────────
+            # MACRO (RVP±2) + MICRO (CVD) + QUANT (|z-score| > 2σ)
+            # 3/3 = opera | 2/3 = alerta | 1/3 = ignora
+            import numpy as _np
+
+            _closes_  = ohlcv["closes"]
+            _highs_   = ohlcv.get("highs",   _closes_)
+            _lows_    = ohlcv.get("lows",    _closes_)
+            _volumes_ = ohlcv.get("volumes", [1.0] * len(_closes_))
+
+            # Camada MACRO — preço dentro de RVP±2 (VWAP ± 2×ATR×mult)
+            try:
+                from src.core.ga_population import ATR_MULT_BY_ASSET, ATR_MULT_DEFAULT
+                _atr_vals_ = [
+                    max(_highs_[i] - _lows_[i],
+                        abs(_highs_[i] - _closes_[i-1]),
+                        abs(_lows_[i]  - _closes_[i-1]))
+                    for i in range(1, min(15, len(_closes_)))
+                ]
+                _atr_val_ = float(_np.mean(_atr_vals_)) if _atr_vals_ else price * 0.01
+                _mult_    = ATR_MULT_BY_ASSET.get(self.config.symbol, ATR_MULT_DEFAULT)
+                _vwap_    = float(_np.mean(_closes_[-24:])) if len(_closes_) >= 24 else price
+                _rvp2_lo_ = _vwap_ - 2 * _mult_ * _atr_val_
+                _rvp2_hi_ = _vwap_ + 2 * _mult_ * _atr_val_
+                macro_ok  = _rvp2_lo_ <= price <= _rvp2_hi_
+                # Modo notícia (TDD §5.3): RVP±2 = rompimento, não reversão
+                if self.config.news_day_mode and not macro_ok:
+                    macro_ok = True   # em dia de notícia, não bloqueia por RVP
+                    self._log("news_day_mode: RVP±2 tratado como rompimento — macro_ok=True")
+            except Exception as _e_:
+                macro_ok = True
+                self._log(f"Convergência MACRO erro (fallback True): {_e_}", "WARNING")
+
+            # Camada MICRO — CVD divergência/absorção
+            try:
+                _cvd_     = get_cvd_real(
+                    symbol        = self.config.symbol,
+                    exchange_name = self.config.exchange,
+                    api_key       = self.config.api_key,
+                    secret        = self.config.api_secret,
+                    limit         = 200,
+                    window_min    = 5,
+                )
+                # BUY só se CVD bullish ou neutro
+                micro_ok  = _cvd_["signal"] in ("bullish", "neutro")
+                _cvd_score_ = float(_cvd_["score"])
+            except Exception as _e_:
+                micro_ok    = True   # não bloqueia por erro
+                _cvd_score_ = 0.0
+                self._log(f"Convergência MICRO erro (fallback True): {_e_}", "WARNING")
+
+            # Camada QUANT — |z-score VWAP| controla esgotamento
+            try:
+                _zs_      = zscore_vwap(_highs_, _lows_, _closes_, _volumes_, period=20)
+                _z_score_ = float(_zs_["zscore"][-1]) if _zs_.get("zscore") else 0.0
+                # BUY: z < +2.0 (preço não esticado para cima)
+                quant_ok  = _z_score_ < 2.0
+            except Exception as _e_:
+                quant_ok  = True
+                _z_score_ = 0.0
+                self._log(f"Convergência QUANT erro (fallback True): {_e_}", "WARNING")
+
+            _conv_score_ = int(macro_ok) + int(micro_ok) + int(quant_ok)
+            self.state.convergence_score = _conv_score_
+
+            self._log(
+                f"Convergência | {_conv_score_}/3 | "
+                f"MACRO(RVP±2)={macro_ok} | "
+                f"MICRO(CVD={_cvd_score_:+.3f})={micro_ok} | "
+                f"QUANT(z={_z_score_:.2f})={quant_ok}"
+            )
+
+            if _conv_score_ < 3:
+                _msg_ = (
+                    f"CONVERGÊNCIA 2/3 — ALERTA (RF-09): entrada bloqueada | "
+                    f"MACRO={macro_ok} MICRO={micro_ok} QUANT={quant_ok}"
+                    if _conv_score_ == 2 else
+                    f"CONVERGÊNCIA {_conv_score_}/3 — INSUFICIENTE: ignorando sinal"
+                )
+                self._log(_msg_, "WARNING")
+                return  # não entra — exige 3/3
+            # ── fim convergência 3/3 ─────────────────────────────────
+
             flow_approved = True
             if self.config.use_flow_filter and flow:
                 flow_approved = flow.flow_ok
@@ -520,7 +743,7 @@ class TradingBot:
                     )
             if flow_approved:
                 flow_score_str = f"{flow.flow_score:+.3f}" if flow else "0.000"
-                self._log(f"Sinal BUY confirmado! Técnico={tech_score:+.4f} Fluxo={flow_score_str}")
+                self._log(f"Sinal BUY 3/3 confirmado! Técnico={tech_score:+.4f} Fluxo={flow_score_str}")
                 # Stress test pré-execute — valida MDD projetado
                 stress_ok = self._stress_test(ohlcv["closes"][-30:] if len(ohlcv["closes"]) >= 30 else ohlcv["closes"])
                 if not stress_ok:
@@ -728,10 +951,15 @@ class TradingBot:
             self.state.total_pnl += pnl_usd
             if pnl_usd > 0:
                 self.state.winning_trades += 1
+            self.state.total_trades += 1
+
+            # Atualiza PnL diário em R (TDD §5.3)
+            self._update_daily_pnl(pnl_pct)
 
             self._log(
                 f"Posição fechada | Motivo: {reason} | "
-                f"PnL: {pnl_pct:+.2f}% (${pnl_usd:+.2f})"
+                f"PnL: {pnl_pct:+.2f}% (${pnl_usd:+.2f}) | "
+                f"PnL_diário={self.state.daily_pnl:+.4f}R"
             )
 
             await save_trade_close(
@@ -788,6 +1016,18 @@ class TradingBot:
             "last_check":      self.state.last_check,
             "errors":          self.state.errors,
             "log":             self.state.log[-20:],
+            # ── Risco intraday TDD §5.3 ──────────────────────
+            "risk": {
+                "daily_pnl_r":        round(self.state.daily_pnl, 4),
+                "daily_trades":       self.state.daily_trades,
+                "daily_limit_hit":    self.state.daily_limit_hit,
+                "daily_loss_limit_r": self.config.daily_loss_limit_r,
+                "rvp_attempts":       dict(self.state.rvp_level_attempts),
+                "max_rvp_attempts":   self.config.max_rvp_attempts,
+                "capital_pct":        self.config.capital_pct,
+                "news_day_mode":      self.config.news_day_mode,
+                "convergence_score":  self.state.convergence_score,
+            },
             "config": {
                 "w_rsi":             self.config.w_rsi,
                 "w_macd":            self.config.w_macd,
@@ -797,5 +1037,7 @@ class TradingBot:
                 "max_spread_pct":    self.config.max_spread_pct,
                 "stop_loss_pct":     self.config.stop_loss_pct,
                 "take_profit_pct":   self.config.take_profit_pct,
+                "capital_pct":       self.config.capital_pct,
+                "daily_loss_limit_r": self.config.daily_loss_limit_r,
             }
         }

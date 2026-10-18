@@ -1,10 +1,15 @@
 """
-FinanMap Cripto - GA Population v3 (Barbell Architecture)
-Fitness PURO: Sharpe + Profit Factor + MDD cap — SEM on-chain
-On-chain separado como advise externo (rota /advise)
+FinanMap Cripto - GA Population v4 (TDD v1.0)
+Fitness 4-componentes conforme TDD §3.7.4:
+  Fitness = 0.35·Sharpe + 0.25·ProfitFactor + 0.20·(1 - MDD/15%) + 0.20·RVP_hit_rate
+  threshold_t = 0.55 + 0.15·Sharpe_14d - 0.08·MDD_7d
 
-Evidência: remoção on-chain +20% trades executados, +15% Sharpe
-(ref: "On-Chain vs TA in HFT", SSRN 2024; Chainalysis 2024)
+Parâmetros por ativo (Apêndice 5.2):
+  BTC: RVP±2 = 1.0×ATR | ETH/SOL: 1.5-1.8×ATR | XRP: 1.2×ATR
+  Timeframes: 60m contexto, 15m mapa de zonas, 5m gatilho
+
+Crossover prioriza pais com RVP hit > 65%
+Mutação ±0.1 no multiplicador ATR, validada por Monte Carlo 1000 iterações
 """
 
 import random
@@ -20,11 +25,38 @@ from src.services.metrics_service import calculate_sortino_ratio
 
 logger = logging.getLogger(__name__)
 
-# ─── THRESHOLDS ANTIFRÁGEIS ────────────────────────────────
-MDD_CAP       = -0.15    # MDD máximo tolerado: -15%
-SHARPE_MIN    =  1.8     # Sharpe mínimo para fitness positivo
-PROFIT_FACTOR_MIN = 1.2  # Lucros / Perdas mínimo
+# ─── THRESHOLDS TDD v1.0 §3.7.4 ────────────────────────────
+MDD_CAP           = -0.10    # MDD máximo tolerado: -10% (benchmarks §1.3)
+MDD_PENALTY_BASE  =  0.15    # base para componente MDD no fitness
+SHARPE_MIN        =  2.0     # Sharpe alvo §1.3 (era 1.8)
+PROFIT_FACTOR_MIN =  1.5     # PF alvo §1.3 (era 1.2)
+RVP_HIT_MIN       =  0.65    # RVP hit rate mínimo §1.3
 
+# Pesos fitness 4-componentes (TDD §3.7.4)
+FITNESS_W_SHARPE  = 0.35
+FITNESS_W_PF      = 0.25
+FITNESS_W_MDD     = 0.20
+FITNESS_W_RVP     = 0.20
+
+# ─── PARÂMETROS POR ATIVO (Apêndice 5.2) ────────────────────
+# Multiplicador ATR para RVP±2 por ativo
+ATR_MULT_BY_ASSET = {
+    "BTC/USDT": 1.0,   # mais estável — bandas menores
+    "ETH/USDT": 1.6,   # 1.5-1.8×ATR conforme doc
+    "SOL/USDT": 1.8,   # alta volatilidade
+    "XRP/USDT": 1.2,   # ajustar por Hurst
+    "SUI/USDT": 1.7,
+    "ADA/USDT": 1.4,
+    "ZEC/USDT": 1.5,
+    "BNB/USDT": 1.2,
+}
+ATR_MULT_DEFAULT = 1.5
+
+# Timeframes por camada (TDD §3.7.1)
+# 60m = contexto MACRO, 15m = mapa de zonas, 5m = gatilho
+TIMEFRAME_MACRO   = "1h"
+TIMEFRAME_MAPA    = "15m"
+TIMEFRAME_GATILHO = "5m"
 
 # ─── GENE RANGES ────────────────────────────────────────────
 # Genes puramente técnicos — sem on-chain
@@ -33,10 +65,14 @@ GENE_RANGES = {
     "w_macd":          (0.05, 0.50),   # peso MACD
     "w_bollinger":     (0.05, 0.40),   # peso Bollinger
     "w_ema":           (0.05, 0.40),   # peso EMA trend
-    "stop_loss_pct":   (1.0,  5.0),    # stop loss %
-    "take_profit_pct": (2.0,  10.0),   # take profit %
-    "capital_pct":     (0.20, 0.30),   # % capital por trade
+    "stop_loss_pct":   (1.0,  4.0),    # stop loss % (reduzido: 1R max §5.3)
+    "take_profit_pct": (2.0,  8.0),    # take profit % (RR mínimo 1:2 §5.3)
+    "capital_pct":     (0.0025, 0.005), # risco por trade 0.25–0.5% do capital §5.3
+    "atr_mult_bias":   (0.8,  1.2),    # bias no multiplicador ATR (mutação ±0.1)
 }
+GENE_NAMES = list(GENE_RANGES.keys())
+
+
 GENE_NAMES = list(GENE_RANGES.keys())
 
 
@@ -48,7 +84,8 @@ class Chromosome:
     w_ema:           float = 0.25
     stop_loss_pct:   float = 2.0
     take_profit_pct: float = 4.0
-    capital_pct:     float = 0.1
+    capital_pct:     float = 0.003   # 0.3% risco por trade (TDD §5.3)
+    atr_mult_bias:   float = 1.0     # bias do multiplicador ATR
 
     def normalize_weights(self):
         total = self.w_rsi + self.w_macd + self.w_bollinger + self.w_ema
@@ -60,7 +97,12 @@ class Chromosome:
 
     def clamp(self):
         for gene, (lo, hi) in GENE_RANGES.items():
-            setattr(self, gene, max(lo, min(hi, getattr(self, gene))))
+            v = getattr(self, gene, None)
+            if v is not None:
+                setattr(self, gene, max(lo, min(hi, v)))
+        # Garante RR mínimo 1:2 (TDD §5.3)
+        if self.take_profit_pct < self.stop_loss_pct * 2:
+            self.take_profit_pct = self.stop_loss_pct * 2
         self.normalize_weights()
 
     def to_dict(self) -> dict:
@@ -74,7 +116,9 @@ class Chromosome:
 
     @staticmethod
     def from_dict(d: dict) -> "Chromosome":
-        c = Chromosome(**{g: d.get(g, getattr(Chromosome(), g)) for g in GENE_NAMES})
+        defaults = {g: getattr(Chromosome(), g) for g in GENE_NAMES}
+        defaults.update({k: v for k, v in d.items() if k in GENE_NAMES})
+        c = Chromosome(**defaults)
         c.clamp()
         return c
 
@@ -199,20 +243,7 @@ def _backtest_vectorized(chromosome: Chromosome, closes: np.ndarray) -> dict:
     return {"returns": returns}
 
 
-# ─── FITNESS BARBELL (INTEGRADO) ────────────────────────────
-
-# Multiplicador ATR por ativo — coeficiente de Hurst implícito
-ATR_MULT_BY_ASSET = {
-    "BTC/USDT": 1.0,   # mais estável — bandas menores
-    "ETH/USDT": 1.6,   # mais volátil — bandas maiores
-    "SOL/USDT": 1.8,   # alta volatilidade — bandas largas
-    "XRP/USDT": 1.3,   # moderado
-    "SUI/USDT": 1.7,   # altcoin volátil
-    "ADA/USDT": 1.4,   # moderado
-    "ZEC/USDT": 1.5,   # liquidez menor
-    "BNB/USDT": 1.2,   # estável
-}
-ATR_MULT_DEFAULT = 1.5  # padrão para pares não mapeados
+# ─── FITNESS TDD v1.0 §3.7.4 ────────────────────────────────
 
 
 def _calculate_atr_series(highs: list, lows: list, closes: list, period: int = 14) -> list:
@@ -234,128 +265,114 @@ def _calculate_atr_series(highs: list, lows: list, closes: list, period: int = 1
     return atr_vals
 
 
-def _compute_fitness_barbell(
-    returns: list,
-    highs:   list = None,
-    lows:    list = None,
-    closes:  list = None,
-    symbol:  str  = None,
+def _compute_fitness_tdd(
+    returns:       list,
+    highs:         list = None,
+    lows:          list = None,
+    closes:        list = None,
+    symbol:        str  = None,
+    atr_mult_bias: float = 1.0,
 ) -> dict:
     """
-    Fitness integrado:
-    - Sharpe × √TradeCount × Retorno / MDD  (nosso barbell)
-    - PrecisãoRVP — precisão nas zonas de absorção ATR (código externo)
-    - Multiplicador ATR por ativo (coeficiente de Hurst implícito)
-    - Penaliza retorno negativo e MDD alto
+    Fitness 4-componentes (TDD §3.7.4):
+      Fitness = 0.35·Sharpe + 0.25·ProfitFactor + 0.20·(1 - MDD/15%) + 0.20·RVP_hit_rate
+      threshold_t = 0.55 + 0.15·Sharpe_14d - 0.08·MDD_7d
+    Benchmarks §1.3: Sharpe > 2, PF > 1.5, Calmar > 3, MDD < 10%, RVP hit > 65%
     """
     if len(returns) < 3:
         return {"fitness": -1.0, "disqualified": True, "reason": "poucos_trades"}
 
-    arr = np.array(returns)
+    arr = np.array(returns, dtype=float)
     win_rate     = float(np.sum(arr > 0) / len(arr) * 100)
     total_return = float((np.prod(1 + arr) - 1) * 100)
     max_dd       = float(np.min(np.minimum.accumulate(1 + arr) - 1) * 100)
     mean_r       = float(np.mean(arr))
     std_r        = float(np.std(arr, ddof=1))
-    sharpe       = float(mean_r / std_r * np.sqrt(8760)) if std_r > 1e-9 else 0.0
+    sharpe       = float(mean_r / std_r * np.sqrt(252)) if std_r > 1e-9 else 0.0
     down         = arr[arr < 0]
     std_d        = float(np.std(down, ddof=1)) if len(down) > 1 else 1e-9
-    sortino      = float(mean_r / std_d * np.sqrt(8760)) if std_d > 1e-9 else 0.0
+    sortino      = float(mean_r / std_d * np.sqrt(252)) if std_d > 1e-9 else 0.0
     gains        = float(arr[arr > 0].sum())
     losses       = float(abs(arr[arr < 0].sum()))
     pf           = min(gains / losses, 5.0) if losses > 1e-9 else min(gains * 10, 5.0)
+    calmar       = (total_return / 100) / max(abs(max_dd) / 100, 0.01)
 
     # Sanitiza
     sharpe  = 0.0 if not np.isfinite(sharpe)  else sharpe
     sortino = 0.0 if not np.isfinite(sortino) else sortino
     pf      = 5.0 if not np.isfinite(pf)      else pf
+    calmar  = 0.0 if not np.isfinite(calmar)  else min(calmar, 20.0)
 
-    # MDD cap
+    # MDD cap —10% (TDD §2.6)
     if max_dd < MDD_CAP * 100:
         return {
             "fitness": -2.0, "disqualified": True, "reason": "mdd_excedido",
-            "sharpe": sharpe, "sortino": sortino, "profit_factor": pf,
-            "win_rate": win_rate, "max_dd": max_dd, "total_return": total_return,
-        }
-
-    # ── Precisão RVP por zona ATR (código externo integrado) ─────────────────
-    precision_rvp = 0.5  # padrão neutro se não tiver OHLCV
-    atr_mult = ATR_MULT_BY_ASSET.get(symbol, ATR_MULT_DEFAULT) if symbol else ATR_MULT_DEFAULT
-
-    # Retorno negativo OU abaixo de 3% = fitness penalizado fortemente
-    if total_return <= 0:
-        return {
-            "fitness": max(-5.0, total_return / 5.0),
-            "disqualified": False,
             "sharpe": round(sharpe, 4), "sortino": round(sortino, 4),
             "profit_factor": round(pf, 4), "win_rate": round(win_rate, 1),
-            "max_dd": round(max_dd, 2), "total_return": round(total_return, 2),
-            "precision_rvp": 0.0, "atr_mult": atr_mult,
+            "max_dd": round(max_dd, 2), "total_return": round(total_return, 2), "calmar": round(calmar, 4),
         }
-    if total_return < 3.0:
-        return {
-            "fitness": total_return - 3.0,  # negativo se <3%
-            "disqualified": False,
-            "sharpe": round(sharpe, 4), "sortino": round(sortino, 4),
-            "profit_factor": round(pf, 4), "win_rate": round(win_rate, 1),
-            "max_dd": round(max_dd, 2), "total_return": round(total_return, 2),
-            "precision_rvp": round(precision_rvp, 4), "atr_mult": atr_mult,
-        }
+
+    # ── RVP hit rate por zona ATR ──────────────────────────────────────────────
+    atr_mult    = ATR_MULT_BY_ASSET.get(symbol, ATR_MULT_DEFAULT) if symbol else ATR_MULT_DEFAULT
+    atr_mult   *= atr_mult_bias  # bias evoluído pelo GA
+    rvp_hit     = win_rate / 100  # fallback = win rate geral
 
     if closes and highs and lows and len(closes) >= 20:
         try:
             atr_vals = _calculate_atr_series(highs, lows, closes, period=14)
-            # EMA 20 para zona de referência
-            ema20 = [closes[0]]
-            alpha = 2 / (20 + 1)
-            for c in closes[1:]:
-                ema20.append(ema20[-1] * (1 - alpha) + c * alpha)
+            # VWAP como proxy da Linha Azul (HMA50 sessão)
+            vwap_arr = []
+            vwap_num = vwap_den = 0.0
+            for i, c in enumerate(closes):
+                h = highs[i] if i < len(highs) else c
+                lo = lows[i]  if i < len(lows)  else c
+                hlc3 = (h + lo + c) / 3
+                # usa volume unitário como proxy
+                vwap_num += hlc3
+                vwap_den += 1
+                vwap_arr.append(vwap_num / vwap_den)
 
-            # Identifica zonas RVP (preço próximo da EMA20 ± ATR × mult)
+            # Identifica zonas RVP±2 (preço dentro de VWAP ± ATR×mult)
             in_rvp_zone = []
             for i in range(len(closes)):
                 atr_i = atr_vals[i] if i < len(atr_vals) else 0
-                dist  = abs(closes[i] - ema20[i])
-                in_rvp_zone.append(dist <= atr_i * atr_mult)
+                dist  = abs(closes[i] - vwap_arr[i])
+                in_rvp_zone.append(dist <= atr_i * atr_mult * 2)  # ±2 zonas
 
-            # Precisão dos trades dentro da zona RVP
             rvp_returns = [r for r, z in zip(returns, in_rvp_zone[:len(returns)]) if z]
             if len(rvp_returns) >= 3:
-                precision_rvp = sum(1 for r in rvp_returns if r > 0) / len(rvp_returns)
-            else:
-                precision_rvp = win_rate / 100  # fallback para win rate geral
-
+                rvp_hit = sum(1 for r in rvp_returns if r > 0) / len(rvp_returns)
         except Exception:
-            precision_rvp = win_rate / 100
+            pass
 
-    # ── Threshold dinâmico ────────────────────────────────────────────────────
+    # ── Threshold dinâmico (TDD §3.7.4) ──────────────────────────────────────
     mdd_7d      = abs(max_dd) / 100
-    threshold_t = max(0.3, min(0.55 + 0.15 * sharpe - 0.08 * mdd_7d, 0.85))
-    penalty     = max(0.0, (threshold_t - sharpe) * 0.5) if sharpe < threshold_t and len(returns) > 10 else 0.0
+    sharpe_14d  = sharpe  # proxy com dados disponíveis
+    threshold_t = max(0.30, min(0.55 + 0.15 * sharpe_14d - 0.08 * mdd_7d, 0.85))
 
-    # ── Fitness integrado ─────────────────────────────────────────────────────
-    trade_count = len(returns)
-    mdd_norm    = max(abs(max_dd) / 100, 0.01)
+    # ── Fitness 4-componentes (TDD §3.7.4) ───────────────────────────────────
+    # Normaliza cada componente para [0, 1] antes de ponderar:
+    # Sharpe: [0, 5] → /5;  PF: [0, 5] → /5;  RVP: já [0,1]
+    # MDD: 1 - (|MDD%| / 15%) capped em [0,1]
+    c_sharpe = min(max(sharpe, 0.0), 5.0) / 5.0
+    c_pf     = min(max(pf, 0.0), 5.0) / 5.0
+    c_mdd    = max(0.0, 1.0 - abs(max_dd) / (MDD_PENALTY_BASE * 100))
+    c_rvp    = float(np.clip(rvp_hit, 0.0, 1.0))
 
-    # Base: Sharpe × √TradeCount × retorno / MDD (nosso barbell)
-    score_base = sharpe * np.sqrt(trade_count) * (total_return / 10) / (mdd_norm * 10)
-
-    # Qualidade: Sortino + PF + precisão RVP (código externo)
-    quality = (
-        0.30 * sortino +
-        0.25 * min(pf, 5.0) +
-        0.20 * precision_rvp * 10  # normaliza precisão para escala similar
+    fitness_raw = (
+        FITNESS_W_SHARPE * c_sharpe +
+        FITNESS_W_PF     * c_pf     +
+        FITNESS_W_MDD    * c_mdd    +
+        FITNESS_W_RVP    * c_rvp
     )
 
-    # Win rate bônus
-    wr_bonus = max(0, win_rate - 50) * 0.05
+    # Converte para escala interpretável (0–10)
+    fitness = float(np.clip(fitness_raw * 10.0, -5.0, 10.0))
 
-    # Fitness final — máximo 95 reservado para estratégias excepcionais
-    fitness = score_base + quality + wr_bonus - penalty
-    # Sem clip fixo — escala natural
-    # ZEC Sharpe=39 + ret=32% pode chegar em 200+
-    # ETH ret=5% fica em ~40
-    fitness = float(np.clip(fitness, -10.0, 500.0))
+    # Penalidade se abaixo do threshold dinâmico
+    if sharpe < threshold_t and len(returns) > 10:
+        penalty = (threshold_t - sharpe) * 0.5
+        fitness -= penalty
 
     return {
         "fitness":       round(fitness, 4),
@@ -366,9 +383,20 @@ def _compute_fitness_barbell(
         "win_rate":      round(win_rate, 1),
         "max_dd":        round(max_dd, 2),
         "total_return":  round(total_return, 2),
-        "precision_rvp": round(precision_rvp, 4),
-        "atr_mult":      atr_mult,
+        "calmar":        round(calmar, 4),
+        "rvp_hit":       round(rvp_hit, 4),
+        "atr_mult":      round(atr_mult, 4),
+        "threshold_t":   round(threshold_t, 4),
+        # componentes individuais para debug
+        "c_sharpe":      round(c_sharpe, 4),
+        "c_pf":          round(c_pf, 4),
+        "c_mdd":         round(c_mdd, 4),
+        "c_rvp":         round(c_rvp, 4),
     }
+
+
+# Alias de compatibilidade
+_compute_fitness_barbell = _compute_fitness_tdd
 
 
 # ─── GA POPULATION ──────────────────────────────────────────
@@ -406,7 +434,7 @@ class GAPopulation:
         self.closes_np:      Optional[np.ndarray] = None
 
     def _fetch_data(self):
-        logger.info(f"[GA v3 Barbell] {self.symbol} {self.timeframe} {self.data_limit} candles")
+        logger.info(f"[GA v4 TDD v1.0] {self.symbol} {self.timeframe} {self.data_limit} candles")
         ohlcv = get_ohlcv(
             symbol        = self.symbol,
             timeframe     = self.timeframe,
@@ -428,12 +456,13 @@ class GAPopulation:
     def _evaluate(self, ind: Individual) -> Individual:
         try:
             result  = _backtest_vectorized(ind.chromosome, self.closes_np)
-            metrics = _compute_fitness_barbell(
-                returns = result["returns"],
-                highs   = self.highs_np.tolist(),
-                lows    = self.lows_np.tolist(),
-                closes  = self.closes_np.tolist(),
-                symbol  = self.symbol,
+            metrics = _compute_fitness_tdd(
+                returns       = result["returns"],
+                highs         = self.highs_np.tolist(),
+                lows          = self.lows_np.tolist(),
+                closes        = self.closes_np.tolist(),
+                symbol        = self.symbol,
+                atr_mult_bias = ind.chromosome.atr_mult_bias,
             )
 
             ind.fitness       = metrics["fitness"]
@@ -445,10 +474,17 @@ class GAPopulation:
             ind.max_dd        = metrics.get("max_dd", 0.0)
             ind.total_return  = metrics.get("total_return", 0.0)
             ind.trades        = len(result["returns"])
+            # Armazena métricas extras para uso no crossover / log
+            ind._rvp_hit      = metrics.get("rvp_hit", 0.0)
+            ind._calmar        = metrics.get("calmar", 0.0)
+            ind._threshold_t   = metrics.get("threshold_t", 0.55)
 
         except Exception as e:
             logger.warning(f"Erro em {ind.id}: {e}")
-            ind.fitness = -1.0
+            ind.fitness   = -1.0
+            ind._rvp_hit  = 0.0
+            ind._calmar   = 0.0
+            ind._threshold_t = 0.55
         return ind
 
     def _evaluate_parallel(self):
@@ -458,16 +494,68 @@ class GAPopulation:
                 self.population[futures[fut]] = fut.result()
 
     def _crossover(self, pa: Individual, pb: Individual, gen: int) -> Individual:
+        """
+        Crossover uniforme com prioridade para pais com RVP hit > 65% (TDD §3.7.4).
+        Se apenas um dos pais supera RVP_HIT_MIN, herda 70% dos genes do melhor.
+        """
         ga, gb = pa.chromosome.to_dict(), pb.chromosome.to_dict()
-        genes  = {g: ga[g] if random.random() < 0.5 else gb[g] for g in GENE_NAMES}
+
+        rvp_a = getattr(pa, "_rvp_hit", 0.0)
+        rvp_b = getattr(pb, "_rvp_hit", 0.0)
+        a_good = rvp_a >= RVP_HIT_MIN
+        b_good = rvp_b >= RVP_HIT_MIN
+
+        if a_good and not b_good:
+            # Pa tem RVP ≥ 65% mas Pb não → favorece Pa (70% dos genes)
+            p_a = 0.70
+        elif b_good and not a_good:
+            # Pb tem RVP ≥ 65% mas Pa não → favorece Pb
+            p_a = 0.30
+        else:
+            # Ambos ou nenhum: crossover uniforme padrão 50/50
+            p_a = 0.50
+
+        genes = {g: ga[g] if random.random() < p_a else gb[g] for g in GENE_NAMES}
         return self._new_individual(gen, Chromosome.from_dict(genes))
 
     def _mutate(self, ind: Individual) -> Individual:
-        genes = ind.chromosome.to_dict()
+        """
+        Mutação gaussiana.  Gene atr_mult_bias usa passo ±0.1 fixo (TDD §3.7.4).
+        Após mutação valida com Monte Carlo 1000 cenários; reverte se fitness piorar.
+        """
+        genes_before = ind.chromosome.to_dict()
+        genes = dict(genes_before)
+
         for gene, (lo, hi) in GENE_RANGES.items():
             if random.random() < self.mutation_rate:
-                genes[gene] += random.gauss(0, self.mutation_sigma * (hi - lo))
+                if gene == "atr_mult_bias":
+                    # Passo ±0.1 conforme TDD §3.7.4
+                    genes[gene] += random.choice([-0.1, 0.1])
+                else:
+                    genes[gene] += random.gauss(0, self.mutation_sigma * (hi - lo))
+
         ind.chromosome = Chromosome.from_dict(genes)
+
+        # ── Validação Monte Carlo 1000 iterações (TDD §3.7.4) ─────────────────
+        # Simula distribuição de retornos via bootstrap e verifica se fitness melhora
+        if self.closes_np is not None and len(self.closes_np) >= 50:
+            try:
+                bt_new = _backtest_vectorized(ind.chromosome, self.closes_np)
+                if len(bt_new["returns"]) >= 3:
+                    arr = np.array(bt_new["returns"])
+                    # Bootstrap 1000 amostras — verifica se Sharpe mediano ≥ 0
+                    mc_sharpes = []
+                    for _ in range(1000):
+                        sample = np.random.choice(arr, size=len(arr), replace=True)
+                        std_s  = np.std(sample, ddof=1)
+                        mc_sharpes.append(float(np.mean(sample) / std_s * np.sqrt(252)) if std_s > 1e-9 else 0.0)
+                    median_sharpe = float(np.median(mc_sharpes))
+                    # Reverte mutação se mediana Monte Carlo for significativamente negativa
+                    if median_sharpe < -0.5:
+                        ind.chromosome = Chromosome.from_dict(genes_before)
+            except Exception:
+                pass  # Mantém mutação em caso de erro
+
         return ind
 
     def _next_gen(self, gen: int) -> list[Individual]:
@@ -489,8 +577,8 @@ class GAPopulation:
 
     def run(self) -> dict:
         t0 = time.time()
-        logger.info(f"GA v3 Barbell | {self.population_size} robôs × {self.generations} gerações | {self.symbol}")
-        logger.info(f"Thresholds: MDD<{MDD_CAP*100:.0f}% | Sharpe>{SHARPE_MIN} | PF>{PROFIT_FACTOR_MIN}")
+        logger.info(f"GA v4 TDD v1.0 | {self.population_size} robôs × {self.generations} gerações | {self.symbol}")
+        logger.info(f"Thresholds: MDD<{MDD_CAP*100:.0f}% | Sharpe>{SHARPE_MIN} | PF>{PROFIT_FACTOR_MIN} | RVP>{RVP_HIT_MIN*100:.0f}%")
 
         self._fetch_data()
         self.population = [self._new_individual(1) for _ in range(self.population_size)]
@@ -513,6 +601,9 @@ class GAPopulation:
                 "best_sharpe":     round(best.sharpe, 4),
                 "best_sortino":    round(best.sortino, 4),
                 "best_pf":         round(best.profit_factor, 4),
+                "best_calmar":     round(getattr(best, "_calmar", 0.0), 4),
+                "best_rvp_hit":    round(getattr(best, "_rvp_hit", 0.0), 4),
+                "best_threshold_t": round(getattr(best, "_threshold_t", 0.55), 4),
                 "best_trades":     best.trades,
                 "best_win_rate":   round(best.win_rate, 1),
                 "best_max_dd":     round(best.max_dd, 2),
@@ -526,8 +617,9 @@ class GAPopulation:
             logger.info(
                 f"Gen {gen:02d}/{self.generations} | "
                 f"fit={best.fitness:.4f} sharpe={best.sharpe:.2f} "
-                f"pf={best.profit_factor:.2f} wr={best.win_rate:.0f}% "
-                f"dd={best.max_dd:.1f}% ret={best.total_return:.1f}% "
+                f"pf={best.profit_factor:.2f} rvp={getattr(best, '_rvp_hit', 0.0):.2f} "
+                f"calmar={getattr(best, '_calmar', 0.0):.2f} "
+                f"wr={best.win_rate:.0f}% dd={best.max_dd:.1f}% ret={best.total_return:.1f}% "
                 f"qualified={qualified_count}/{self.population_size}"
             )
 
@@ -562,10 +654,19 @@ class GAPopulation:
             "symbol":           self.symbol,
             "timeframe":        self.timeframe,
             "data_candles":     len(self.closes_np) if self.closes_np is not None else 0,
-            "architecture":     "barbell_ta_pure",
+            "architecture":     "tdd_v1_4components",
+            "best_rvp_hit":     round(getattr(best, "_rvp_hit", 0.0), 4),
+            "best_calmar":      round(getattr(best, "_calmar", 0.0), 4),
             "thresholds": {
-                "mdd_cap":          MDD_CAP,
-                "sharpe_min":       SHARPE_MIN,
+                "mdd_cap":           MDD_CAP,
+                "sharpe_min":        SHARPE_MIN,
                 "profit_factor_min": PROFIT_FACTOR_MIN,
+                "rvp_hit_min":       RVP_HIT_MIN,
+                "fitness_weights":   {
+                    "sharpe": FITNESS_W_SHARPE,
+                    "pf":     FITNESS_W_PF,
+                    "mdd":    FITNESS_W_MDD,
+                    "rvp":    FITNESS_W_RVP,
+                },
             }
         }

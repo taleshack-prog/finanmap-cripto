@@ -630,6 +630,328 @@ async def reversion_signal_endpoint(symbol: str = Query("BTC/USDT")):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ─── ENDPOINTS TDD v1.0 §3.5 ───────────────────────────────
+
+class ValidateTradeRequest(BaseModel):
+    symbol:          str
+    signal:          str            # "BUY" | "SELL"
+    price:           float
+    capital:         float   = 1000.0
+    stop_loss_pct:   float   = 2.0
+    take_profit_pct: float   = 4.0
+    capital_pct:     float   = 0.003
+    api_key:         str     = ""
+    api_secret:      str     = ""
+    exchange:        str     = "binance"
+
+@app.post("/validate_trade")
+async def validate_trade(req: ValidateTradeRequest):
+    """
+    Convergência 3/3 (RF-09 TDD §3.5):
+    MACRO (RVP±2) + MICRO (CVD divergência/absorção) + QUANT (|z-score|>2.0)
+    Retorna: approved, convergence_score (0-3), layers, reason
+    """
+    try:
+        from src.services.technical_analysis import zscore_vwap, atr_normalized
+        from src.services.cvd_service import get_cvd_real
+
+        ohlcv = get_ohlcv(
+            symbol=req.symbol, timeframe="5m", limit=100,
+            exchange_name=req.exchange, api_key=req.api_key, secret=req.api_secret,
+        )
+        closes  = ohlcv["closes"]
+        highs   = ohlcv.get("highs",  closes)
+        lows    = ohlcv.get("lows",   closes)
+        volumes = ohlcv.get("volumes", [1.0]*len(closes))
+
+        layers = {}
+
+        # ── MACRO: RVP±2 — preço dentro da zona de valor ─────
+        from src.core.ga_population import ATR_MULT_BY_ASSET, ATR_MULT_DEFAULT
+        atr_vals = [max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1]))
+                    for i in range(1, min(15, len(closes)))]
+        atr_val  = float(np.mean(atr_vals)) if atr_vals else req.price * 0.01
+        mult     = ATR_MULT_BY_ASSET.get(req.symbol, ATR_MULT_DEFAULT)
+        vwap     = float(np.mean(closes[-24:])) if len(closes) >= 24 else req.price
+        rvp2_lo  = vwap - 2 * mult * atr_val
+        rvp2_hi  = vwap + 2 * mult * atr_val
+        in_rvp2  = rvp2_lo <= req.price <= rvp2_hi
+        layers["macro"] = {
+            "name":    "RVP±2",
+            "ok":      in_rvp2,
+            "vwap":    round(vwap, 4),
+            "rvp2_lo": round(rvp2_lo, 4),
+            "rvp2_hi": round(rvp2_hi, 4),
+            "price":   req.price,
+        }
+
+        # ── MICRO: CVD divergência / absorção ────────────────
+        cvd_ok = False
+        try:
+            cvd = get_cvd_real(symbol=req.symbol, exchange_name=req.exchange,
+                               api_key=req.api_key, secret=req.api_secret,
+                               limit=200, window_min=5)
+            # BUY só entra se CVD bullish ou neutro; SELL se bearish ou neutro
+            if req.signal == "BUY":
+                cvd_ok = cvd["signal"] in ("bullish", "neutro")
+            else:
+                cvd_ok = cvd["signal"] in ("bearish", "neutro")
+            layers["micro"] = {"name": "CVD", "ok": cvd_ok,
+                                "score": round(cvd["score"], 4), "signal": cvd["signal"]}
+        except Exception as e:
+            layers["micro"] = {"name": "CVD", "ok": True, "error": str(e), "fallback": True}
+            cvd_ok = True  # não bloqueia por erro
+
+        # ── QUANT: |z-score VWAP| > 2.0 (esgotamento) ───────
+        zs = zscore_vwap(highs, lows, closes, volumes, period=20)
+        z_score = float(zs["zscore"][-1]) if zs.get("zscore") else 0.0
+        # Para BUY: z_score < 2 (não esticado); SELL: z_score > -2
+        if req.signal == "BUY":
+            quant_ok = z_score < 2.0
+        else:
+            quant_ok = z_score > -2.0
+        layers["quant"] = {"name": "Z-Score", "ok": quant_ok,
+                            "z_score": round(z_score, 4)}
+
+        # ── Convergência 3/3 ─────────────────────────────────
+        score = sum([in_rvp2, cvd_ok, quant_ok])
+        approved = score == 3
+
+        # Verifica também RR mínimo 1:2 (TDD §5.3)
+        rr_ok = req.take_profit_pct >= req.stop_loss_pct * 2
+        if not rr_ok:
+            layers["rr"] = {"name": "RR_min_1:2", "ok": False,
+                             "stop": req.stop_loss_pct, "tp": req.take_profit_pct}
+            approved = False
+
+        return {
+            "approved":          approved,
+            "convergence_score": score,
+            "layers":            layers,
+            "signal":            req.signal,
+            "reason": ("3/3 convergência ✓" if score == 3 else
+                       f"{score}/3 — insuficiente (mínimo 3/3 RF-09)"),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class RVPSignalRequest(BaseModel):
+    exchange:  str   = "binance"
+    api_key:   str   = ""
+    api_secret: str  = ""
+    timeframe: str   = "5m"
+
+@app.get("/rvp_signal/{symbol}")
+async def rvp_signal(
+    symbol: str,
+    exchange:   str = Query("binance"),
+    api_key:    str = Query(""),
+    api_secret: str = Query(""),
+    timeframe:  str = Query("5m"),
+):
+    """
+    Retorna zonas RVP±1/±2/±3 para o símbolo.
+    Usado pelo frontend para exibir níveis no gráfico.
+    """
+    try:
+        from src.core.ga_population import ATR_MULT_BY_ASSET, ATR_MULT_DEFAULT
+        ohlcv   = get_ohlcv(symbol=symbol, timeframe=timeframe, limit=100,
+                             exchange_name=exchange, api_key=api_key, secret=api_secret)
+        closes  = ohlcv["closes"]
+        highs   = ohlcv.get("highs", closes)
+        lows    = ohlcv.get("lows",  closes)
+
+        atr_vals = [max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1]))
+                    for i in range(1, min(15, len(closes)))]
+        atr_val  = float(np.mean(atr_vals)) if atr_vals else closes[-1] * 0.01
+        mult     = ATR_MULT_BY_ASSET.get(symbol, ATR_MULT_DEFAULT)
+        vwap     = float(np.mean(closes[-24:])) if len(closes) >= 24 else closes[-1]
+        price    = closes[-1]
+
+        mean_20  = float(np.mean(closes[-20:])) if len(closes) >= 20 else price
+        std_20   = float(np.std(closes[-20:]))  if len(closes) >= 20 else 1
+        z_score  = (price - mean_20) / std_20 if std_20 > 0 else 0.0
+
+        return {
+            "symbol":    symbol,
+            "price":     round(price, 6),
+            "vwap":      round(vwap, 6),
+            "atr":       round(atr_val, 6),
+            "atr_mult":  mult,
+            "z_score":   round(z_score, 4),
+            "zones": {
+                "rvp1_hi": round(vwap + 0.5 * mult * atr_val, 6),
+                "rvp1_lo": round(vwap - 0.5 * mult * atr_val, 6),
+                "rvp2_hi": round(vwap + 1.0 * mult * atr_val, 6),
+                "rvp2_lo": round(vwap - 1.0 * mult * atr_val, 6),
+                "rvp3_hi": round(vwap + 1.5 * mult * atr_val, 6),
+                "rvp3_lo": round(vwap - 1.5 * mult * atr_val, 6),
+            },
+            "price_zone": (
+                "above_rvp3" if price > vwap + 1.5*mult*atr_val else
+                "rvp3"       if price > vwap + 1.0*mult*atr_val else
+                "rvp2"       if price > vwap + 0.5*mult*atr_val else
+                "rvp1"       if price > vwap                     else
+                "rvp_minus1" if price > vwap - 0.5*mult*atr_val else
+                "rvp_minus2" if price > vwap - 1.0*mult*atr_val else
+                "rvp_minus3" if price > vwap - 1.5*mult*atr_val else
+                "below_rvp_minus3"
+            ),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class RiskSizeRequest(BaseModel):
+    capital:          float
+    stop_loss_pct:    float = 2.0
+    take_profit_pct:  float = 4.0
+    capital_pct:      float = 0.003   # 0.25–0.5% TDD §5.3
+    price:            float
+
+@app.post("/risk_size")
+async def risk_size(req: RiskSizeRequest):
+    """
+    Calcula tamanho da posição dado o risco definido (TDD §5.3).
+    Retorna: qty, position_value, risk_amount, rr_ratio
+    """
+    rr = req.take_profit_pct / max(req.stop_loss_pct, 0.01)
+    risk_amount    = req.capital * req.capital_pct
+    position_value = risk_amount / (req.stop_loss_pct / 100) if req.stop_loss_pct > 0 else 0
+    qty            = position_value / req.price if req.price > 0 else 0
+    return {
+        "qty":            round(qty, 8),
+        "position_value": round(position_value, 4),
+        "risk_amount":    round(risk_amount, 4),
+        "rr_ratio":       round(rr, 2),
+        "rr_ok":          rr >= 2.0,
+        "capital_pct":    req.capital_pct,
+        "stop_loss_pct":  req.stop_loss_pct,
+        "take_profit_pct": req.take_profit_pct,
+        "warning":        "RR < 1:2 — TDD §5.3 exige mínimo 1:2" if rr < 2.0 else None,
+    }
+
+
+class StressTestRequest(BaseModel):
+    symbol:         str   = "BTC/USDT"
+    stop_loss_pct:  float = 2.0
+    capital_pct:    float = 0.003
+    capital:        float = 1000.0
+    exchange:       str   = "binance"
+    api_key:        str   = ""
+    api_secret:     str   = ""
+
+@app.post("/stress_test")
+async def stress_test(req: StressTestRequest):
+    """
+    Stress test Monte Carlo 1000 cenários (TDD §3.7.4).
+    Verifica MDD projetado com parâmetros atuais.
+    """
+    try:
+        ohlcv   = get_ohlcv(symbol=req.symbol, timeframe="1h", limit=200,
+                             exchange_name=req.exchange, api_key=req.api_key, secret=req.api_secret)
+        closes  = np.array(ohlcv["closes"])
+        returns = np.diff(closes) / closes[:-1]
+
+        if len(returns) < 10:
+            raise HTTPException(status_code=400, detail="Dados insuficientes")
+
+        # Monte Carlo 1000 simulações
+        n_sim    = 1000
+        n_period = min(30, len(returns))
+        mdds     = []
+        for _ in range(n_sim):
+            sample  = np.random.choice(returns, size=n_period, replace=True)
+            equity  = np.cumprod(1 + sample)
+            peak    = np.maximum.accumulate(equity)
+            dd      = (equity - peak) / peak
+            mdds.append(float(np.min(dd)))
+
+        mdd_median  = float(np.median(mdds))
+        mdd_p95     = float(np.percentile(mdds, 5))   # pior 5%
+        mdd_mean    = float(np.mean(mdds))
+
+        # Aprovado se MDD mediano dentro do cap de -10% (TDD §1.3)
+        approved = mdd_median > -0.10
+
+        return {
+            "approved":         approved,
+            "mdd_median_pct":   round(mdd_median * 100, 2),
+            "mdd_p95_pct":      round(mdd_p95 * 100, 2),
+            "mdd_mean_pct":     round(mdd_mean * 100, 2),
+            "n_simulations":    n_sim,
+            "n_periods":        n_period,
+            "mdd_cap_pct":      -10.0,
+            "reason": "MDD projetado dentro do limite" if approved
+                      else f"MDD p50={mdd_median*100:.1f}% excede cap de -10%",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class FlowCheckRequest(BaseModel):
+    symbol:    str   = "BTC/USDT"
+    signal:    str   = "BUY"
+    exchange:  str   = "binance"
+    api_key:   str   = ""
+    api_secret: str  = ""
+
+@app.post("/flow_check")
+async def flow_check(req: FlowCheckRequest):
+    """
+    Verifica o MICRO layer: CVD + pressão de agressão 5m + absorção no book.
+    Placar Estatístico §3.7.3:
+      score = CVD(40%) + razão_agressão_5m(30%) + absorção_book(30%)
+    """
+    try:
+        from src.services.cvd_service import get_cvd_real
+
+        # CVD (40%)
+        cvd_score = 0.0
+        try:
+            cvd = get_cvd_real(symbol=req.symbol, exchange_name=req.exchange,
+                               api_key=req.api_key, secret=req.api_secret,
+                               limit=200, window_min=5)
+            cvd_score = float(cvd["score"])
+        except Exception:
+            pass
+
+        # Pressão de agressão 5m via order book (30%)
+        aggression_score = 0.0
+        book_absorption  = 0.0
+        try:
+            ob               = get_order_book(req.symbol, 20, req.exchange)
+            buy_pressure     = float(ob.get("buy_pressure", 0.5))
+            aggression_score = (buy_pressure - 0.5) * 2  # -1 a +1
+            bid_vol          = float(ob.get("bid_volume", 1))
+            ask_vol          = float(ob.get("ask_volume", 1))
+            # Absorção: bid_vol >> ask_vol = compradores absorvendo vendas
+            book_absorption  = float(np.clip((bid_vol - ask_vol) / max(bid_vol + ask_vol, 1), -1, 1))
+        except Exception:
+            pass
+
+        # Placar Estatístico §3.7.3
+        placar = 0.40 * cvd_score + 0.30 * aggression_score + 0.30 * book_absorption
+        signal_ok = (req.signal == "BUY" and placar > 0) or (req.signal == "SELL" and placar < 0)
+
+        return {
+            "approved":          signal_ok,
+            "placar":            round(placar, 4),
+            "components": {
+                "cvd_score":         round(cvd_score, 4),
+                "aggression_score":  round(aggression_score, 4),
+                "book_absorption":   round(book_absorption, 4),
+            },
+            "weights": {"cvd": 0.40, "aggression": 0.30, "absorption": 0.30},
+            "signal":  req.signal,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ─── BACKTEST ───────────────────────────────────────────────
 
 @app.post("/backtest")
