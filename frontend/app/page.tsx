@@ -27,8 +27,10 @@ export default function Home() {
   }, [])
 
   useEffect(() => {
-    (process.env.NEXT_PUBLIC_GA_URL ? fetch(process.env.NEXT_PUBLIC_GA_URL + '/status') : fetch('http://localhost:8110/status')).then(() => setGaStatus('online')).catch(() => setGaStatus('offline'))
-    (process.env.NEXT_PUBLIC_API_URL ? fetch(process.env.NEXT_PUBLIC_API_URL + '/api/status') : fetch('http://localhost:3020/api/status')).then(() => setBackendStatus('online')).catch(() => setBackendStatus('offline'))
+    const gaUrl = (process.env.NEXT_PUBLIC_GA_URL || 'http://localhost:8110') + '/status'
+    const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3020') + '/api/status'
+    fetch(gaUrl).then(() => setGaStatus('online')).catch(() => setGaStatus('offline'))
+    fetch(apiUrl).then(() => setBackendStatus('online')).catch(() => setBackendStatus('offline'))
   }, [])
 
   const maxVal = Math.max(...CHART_DATA)
