@@ -996,24 +996,49 @@ async def backtest(req: BacktestRequest):
     dias   = max(1, (t_end - t_start) // (86_400_000))
     limit  = min(dias + 2, 1000)  # máx 1000 candles por request CCXT
 
-    # Buscar OHLCV real — dados públicos, sem API key
-    try:
-        import ccxt
-        exchange = ccxt.binance({
-            "enableRateLimit": True,
-            "options": {"defaultType": "spot"},
-        })
-        raw = exchange.fetch_ohlcv(symbol, "1d", since=t_start, limit=limit)
-        if not raw:
-            raise HTTPException(status_code=404,
-                detail=f"Sem dados para {symbol} no período {req.start_date} → {req.end_date}")
-    except ccxt.BadSymbol:
-        raise HTTPException(status_code=400, detail=f"Par inválido: {symbol}")
-    except ccxt.NetworkError as e:
-        raise HTTPException(status_code=503, detail=f"Erro de rede Binance: {e}")
-    except ccxt.ExchangeError as e:
-        raise HTTPException(status_code=502, detail=f"Erro Binance: {e}")
+    # Buscar OHLCV real — endpoint CDN público da Binance (sem auth, sem geo-block)
+    sym_raw = symbol.replace("/", "")  # BTC/USDT -> BTCUSDT
+    raw = None
+    _public_endpoints = [
+        "https://data-api.binance.vision/api/v3/klines",
+        "https://api.binance.com/api/v3/klines",
+        "https://api1.binance.com/api/v3/klines",
+        "https://api2.binance.com/api/v3/klines",
+        "https://api3.binance.com/api/v3/klines",
+    ]
+    last_err = None
+    for _ep in _public_endpoints:
+        try:
+            import requests as _req
+            _r = _req.get(_ep, params={
+                "symbol":    sym_raw,
+                "interval":  "1d",
+                "startTime": t_start,
+                "endTime":   t_end,
+                "limit":     limit,
+            }, timeout=12)
+            if _r.status_code == 451:
+                last_err = f"451 geo-blocked: {_ep}"
+                continue
+            if _r.status_code == 400:
+                raise HTTPException(status_code=400, detail=f"Par inválido: {symbol}")
+            _r.raise_for_status()
+            _json = _r.json()
+            raw = [[int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])] for r in _json]
+            logger.info(f"Backtest OHLCV via {_ep}: {len(raw)} candles")
+            break
+        except HTTPException:
+            raise
+        except Exception as e:
+            last_err = str(e)
+            continue
 
+    if not raw:
+        raise HTTPException(status_code=503,
+            detail=f"Todos endpoints Binance bloqueados (último erro: {last_err}). Tente usando Kraken ou KuCoin.")
+    if len(raw) == 0:
+        raise HTTPException(status_code=404,
+            detail=f"Sem dados para {symbol} no período {req.start_date} → {req.end_date}")
     # Filtrar apenas candles dentro do período solicitado
     raw = [c for c in raw if t_start <= c[0] <= t_end]
     if len(raw) < 5:
