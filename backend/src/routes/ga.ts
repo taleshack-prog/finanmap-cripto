@@ -459,4 +459,102 @@ router.patch('/strategies/:id/bot-id', async (req, res: Response) => {
   }
 })
 
+// ─── POST /api/ga/save-evolved ─────────────────────────────
+// Persiste cromossomo evoluído pelo GA Engine (sem autenticação — chamada interna)
+router.post('/save-evolved', async (req, res: Response) => {
+  try {
+    const { symbol, timeframe = '1h', cromossomo, fitnessScore = 0, source = 'ga_engine' } = req.body
+    if (!symbol || !cromossomo) {
+      return res.status(400).json({ error: 'symbol e cromossomo são obrigatórios' })
+    }
+    // Upsert: um registro por símbolo na tabela EvolvedChromosome (ou Estrategia com flag especial)
+    // Usa Estrategia com userId = 'system' e nome = GA_EVOLVED_{symbol}
+    const systemTag = `GA_EVOLVED_${symbol.replace('/', '_')}`
+    const existing  = await prisma.estrategia.findFirst({
+      where: { nome: systemTag },
+    })
+    if (existing) {
+      await prisma.estrategia.update({
+        where: { id: existing.id },
+        data: {
+          cromossomo:      { ...cromossomo, symbol, timeframe, source, updated_at: new Date().toISOString() },
+          fitnessScore:    fitnessScore,
+          retornoEsperado: (cromossomo as any).total_return || 0,
+          geracao:         ((existing.cromossomo as any).geracao || 0) + 1,
+        },
+      })
+      return res.json({ success: true, action: 'updated', symbol, fitnessScore })
+    } else {
+      // Precisa de um userId válido — usa o primeiro user admin ou cria registro system
+      const firstUser = await prisma.user.findFirst({ orderBy: { dataCriacao: 'asc' } })
+      if (!firstUser) return res.status(503).json({ error: 'Nenhum usuário no banco ainda' })
+      await prisma.estrategia.create({
+        data: {
+          userId:          firstUser.id,
+          nome:            systemTag,
+          tipo:            'trading',
+          geracao:         1,
+          cromossomo:      { ...cromossomo, symbol, timeframe, source, updated_at: new Date().toISOString() },
+          fitnessScore:    fitnessScore,
+          retornoEsperado: (cromossomo as any).total_return || 0,
+          ativa:           false,
+        },
+      })
+      return res.status(201).json({ success: true, action: 'created', symbol, fitnessScore })
+    }
+  } catch (err: any) {
+    console.error('save-evolved erro:', err)
+    res.status(500).json({ error: 'Erro ao salvar cromossomo evoluído', detail: err.message })
+  }
+})
+
+// ─── GET /api/ga/evolved-chromosomes ───────────────────────
+// Lista todos os cromossomos evoluídos pelo GA (um por símbolo)
+router.get('/evolved-chromosomes', async (_req, res: Response) => {
+  try {
+    const rows = await prisma.estrategia.findMany({
+      where:   { nome: { startsWith: 'GA_EVOLVED_' } },
+      orderBy: { fitnessScore: 'desc' },
+    })
+    const result = rows.map(r => {
+      const c = r.cromossomo as any
+      return {
+        id:           r.id,
+        symbol:       c?.symbol || r.nome.replace('GA_EVOLVED_', '').replace('_', '/'),
+        timeframe:    c?.timeframe || '1h',
+        fitnessScore: r.fitnessScore,
+        geracao:      r.geracao,
+        cromossomo:   c,
+        updated_at:   c?.updated_at,
+      }
+    })
+    res.json({ evolved: result, total: result.length })
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao listar cromossomos', detail: err.message })
+  }
+})
+
+// ─── GET /api/ga/evolved-chromosomes/:symbol ───────────────
+// Retorna cromossomo evoluído para um símbolo específico
+router.get('/evolved-chromosomes/:symbol', async (req, res: Response) => {
+  try {
+    const symbol   = decodeURIComponent(req.params.symbol).toUpperCase()
+    const systemTag = `GA_EVOLVED_${symbol.replace('/', '_')}`
+    const row = await prisma.estrategia.findFirst({ where: { nome: systemTag } })
+    if (!row) return res.status(404).json({ error: `Nenhum cromossomo evoluído para ${symbol}` })
+    const c = row.cromossomo as any
+    res.json({
+      id:           row.id,
+      symbol,
+      timeframe:    c?.timeframe || '1h',
+      fitnessScore: row.fitnessScore,
+      geracao:      row.geracao,
+      cromossomo:   c,
+      updated_at:   c?.updated_at,
+    })
+  } catch (err: any) {
+    res.status(500).json({ error: 'Erro ao buscar cromossomo', detail: err.message })
+  }
+})
+
 export default router;

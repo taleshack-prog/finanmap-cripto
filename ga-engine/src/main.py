@@ -81,36 +81,75 @@ async def startup_event():
         logger.info(f"Bot list cache aquecido: {data['count']} bots")
     asyncio.create_task(_warmup_bot_list())
 
-    async def re_evolve_weekly():
-        logger.info("🔄 Re-evolução semanal iniciada...")
+    # Símbolos com cromossomos próprios evoluídos pelo GA
+    GA_SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "BNB/USDT"]
+
+    async def _evolve_and_save(symbol: str, timeframe: str = "1h",
+                                population_size: int = 30, generations: int = 30,
+                                data_limit: int = 500) -> dict:
+        """Evolui GA para um símbolo e persiste o cromossomo no backend."""
+        logger.info(f"🧬 Evoluindo GA para {symbol}...")
+        ga = GAPopulation(
+            population_size = population_size,
+            generations     = generations,
+            symbol          = symbol,
+            timeframe       = timeframe,
+            data_limit      = data_limit,
+            exchange        = "binance",
+            api_key         = BINANCE_KEY,
+            api_secret      = BINANCE_SECRET,
+        )
+        result = ga.run()
+        chrom_dict = result.get("chromosome") or result.get("cromossomo") or {}
+        fitness    = result.get("fitness", 0.0)
+        logger.info(f"✅ GA {symbol} | fitness={fitness:.3f} retorno={result.get('total_return', 0):.1f}%")
+
+        # Persiste no backend como estratégia GA master por símbolo
+        _backend = os.getenv("BACKEND_URL", "http://localhost:3020")
         try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                payload = {
+                    "symbol":      symbol,
+                    "timeframe":   timeframe,
+                    "cromossomo":  {**chrom_dict, "symbol": symbol, "fitness": fitness,
+                                   "evolved_at": __import__("datetime").datetime.utcnow().isoformat()},
+                    "fitnessScore": fitness,
+                    "source":      "ga_weekly_evolution",
+                }
+                r = await client.post(f"{_backend}/api/ga/save-evolved", json=payload, timeout=8)
+                if r.status_code in (200, 201):
+                    logger.info(f"💾 Cromossomo {symbol} salvo no banco.")
+                else:
+                    logger.warning(f"Backend save-evolved {symbol}: HTTP {r.status_code} — {r.text[:200]}")
+        except Exception as _e:
+            logger.warning(f"Não foi possível persistir cromossomo {symbol}: {_e}")
+
+        return result
+
+    async def re_evolve_weekly():
+        logger.info("🔄 Re-evolução semanal iniciada (todos os símbolos GA)...")
+        # 1. Símbolos fixos do sistema
+        symbols_to_evolve = list(GA_SYMBOLS)
+        # 2. Adiciona símbolos de estratégias ativas (sem duplicar)
+        try:
+            _backend = os.getenv("BACKEND_URL", "http://localhost:3020")
             async with httpx.AsyncClient(timeout=5) as client:
-                r = await client.get(f"http://localhost:3020/api/ga/strategies/active")
-                strategies = r.json().get("estrategias", [])
-            for s in strategies:
-                if not s.get("bot_config"):
-                    continue
-                symbol    = s.get("symbol", "BTC/USDT")
-                timeframe = s.get("timeframe", "1h")
-                logger.info(f"Re-evoluindo {symbol}...")
-                ga = GAPopulation(
-                    population_size = 10,
-                    generations     = 20,
-                    symbol          = symbol,
-                    timeframe       = timeframe,
-                    data_limit      = 500,
-                    exchange        = "binance",
-                    api_key         = BINANCE_KEY,
-                    api_secret      = BINANCE_SECRET,
-                )
-                result = ga.run()
-                logger.info(
-                    f"Re-evolução {symbol} | fitness={result['fitness']:.2f} "
-                    f"retorno={result['total_return']:.1f}%"
-                )
-                await asyncio.sleep(30)
-        except Exception as e:
-            logger.error(f"Re-evolução semanal erro: {e}")
+                r = await client.get(f"{_backend}/api/ga/strategies/active")
+                for s in r.json().get("estrategias", []):
+                    sym = s.get("symbol", "BTC/USDT")
+                    if sym not in symbols_to_evolve:
+                        symbols_to_evolve.append(sym)
+        except Exception as _e:
+            logger.warning(f"Não foi possível buscar estratégias ativas: {_e}")
+
+        for symbol in symbols_to_evolve:
+            try:
+                await _evolve_and_save(symbol)
+                await asyncio.sleep(45)  # pausa entre símbolos para não sobrecarregar
+            except Exception as e:
+                logger.error(f"Re-evolução {symbol} erro: {e}")
+
+        logger.info(f"✅ Re-evolução semanal concluída — {len(symbols_to_evolve)} símbolos.")
 
     scheduler.add_job(re_evolve_weekly, "cron", day_of_week="sun", hour=2, minute=0)
     scheduler.start()
@@ -496,6 +535,83 @@ async def ga_evolve_sync(req: GAPopulationRequest):
 async def ga_result(job_id: str):
     if job_id not in ga_jobs: raise HTTPException(status_code=404, detail="Job não encontrado")
     return ga_jobs[job_id]
+
+# ─── EVOLUÇÃO POR SÍMBOLO (persiste no banco) ───────────────
+
+class EvolveBySymbolRequest(BaseModel):
+    symbol:          str   = "BTC/USDT"
+    timeframe:       str   = "1h"
+    population_size: int   = 30
+    generations:     int   = 30
+    data_limit:      int   = 500
+
+@app.post("/ga/evolve-by-symbol")
+async def ga_evolve_by_symbol(req: EvolveBySymbolRequest, background_tasks: BackgroundTasks):
+    """Evolui GA para um símbolo específico, persiste o cromossomo no backend e retorna o job_id."""
+    job_id = f"evo_{req.symbol.replace('/', '_')}_{int(time.time())}"
+    ga_jobs[job_id] = {"job_id": job_id, "status": "running", "started_at": int(time.time()),
+                       "symbol": req.symbol, "result": None, "error": None}
+
+    async def _run():
+        try:
+            result = await _evolve_and_save(
+                symbol          = req.symbol,
+                timeframe       = req.timeframe,
+                population_size = req.population_size,
+                generations     = req.generations,
+                data_limit      = req.data_limit,
+            )
+            ga_jobs[job_id].update({"status": "completed", "result": result,
+                                    "completed_at": int(time.time())})
+        except Exception as e:
+            ga_jobs[job_id].update({"status": "error", "error": str(e)})
+            logger.error(f"evolve-by-symbol {req.symbol}: {e}")
+
+    background_tasks.add_task(_run)
+    return {"job_id": job_id, "status": "running", "symbol": req.symbol,
+            "check_at": f"/ga/result/{job_id}"}
+
+@app.post("/ga/evolve-by-symbol/sync")
+async def ga_evolve_by_symbol_sync(req: EvolveBySymbolRequest):
+    """Versão síncrona — aguarda a evolução e retorna o resultado diretamente."""
+    try:
+        result = await _evolve_and_save(
+            symbol          = req.symbol,
+            timeframe       = req.timeframe,
+            population_size = req.population_size,
+            generations     = req.generations,
+            data_limit      = req.data_limit,
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/ga/chromosomes")
+async def ga_chromosomes_list():
+    """Lista os cromossomos evoluídos disponíveis no backend (por símbolo)."""
+    _backend = os.getenv("BACKEND_URL", "http://localhost:3020")
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.get(f"{_backend}/api/ga/evolved-chromosomes")
+            return r.json()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Backend indisponível: {e}")
+
+@app.get("/ga/chromosome/{symbol:path}")
+async def ga_chromosome_by_symbol(symbol: str):
+    """Retorna o cromossomo evoluído mais recente para um símbolo (ex: BTC%2FUSDT)."""
+    _backend = os.getenv("BACKEND_URL", "http://localhost:3020")
+    symbol_clean = symbol.replace("%2F", "/").upper()
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.get(f"{_backend}/api/ga/evolved-chromosomes/{symbol_clean}")
+            if r.status_code == 404:
+                raise HTTPException(status_code=404, detail=f"Nenhum cromossomo evoluído para {symbol_clean}")
+            return r.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
 @app.get("/ga/jobs")
 async def ga_jobs_list():
@@ -1114,21 +1230,40 @@ async def backtest(req: BacktestRequest):
             chrom = Chromosome.from_dict(chrom_dict)
             logger.info(f"Backtest: cromossomo da request | stop={chrom.stop_loss_pct:.1f}% tp={chrom.take_profit_pct:.1f}%")
         else:
-            # Tenta buscar cromossomo do bot ativo salvo no banco
             chrom = None
-            try:
-                import httpx as _httpx
-                _backend = os.getenv("BACKEND_URL", "http://localhost:3020")
-                _r2 = _httpx.get(f"{_backend}/api/bots/active?symbol={symbol}", timeout=3)
-                if _r2.status_code == 200:
-                    _bot = _r2.json()
-                    _saved = _bot.get("cromossomo") or _bot.get("chromosome") or {}
-                    if _saved:
-                        chrom = Chromosome.from_dict(_saved)
-                        logger.info(f"Backtest: cromossomo do bot ativo ({_bot.get('id','?')}) | "
-                                    f"stop={chrom.stop_loss_pct:.1f}% tp={chrom.take_profit_pct:.1f}%")
-            except Exception as _e:
-                logger.debug(f"Backtest: não foi possível buscar bot ativo: {_e}")
+            _backend = os.getenv("BACKEND_URL", "http://localhost:3020")
+
+            # Prioridade 1: cromossomo evoluído GA para este símbolo (save-evolved)
+            if chrom is None:
+                try:
+                    import httpx as _httpx
+                    _sym_enc = symbol.replace("/", "%2F")
+                    _r_evo = _httpx.get(f"{_backend}/api/ga/evolved-chromosomes/{_sym_enc}", timeout=3)
+                    if _r_evo.status_code == 200:
+                        _evo = _r_evo.json()
+                        _saved_evo = _evo.get("cromossomo") or _evo.get("chromosome") or {}
+                        if _saved_evo:
+                            chrom = Chromosome.from_dict(_saved_evo)
+                            logger.info(f"Backtest: cromossomo GA evoluído para {symbol} "
+                                        f"(fitness={_evo.get('fitnessScore',0):.3f}) | "
+                                        f"stop={chrom.stop_loss_pct:.1f}% tp={chrom.take_profit_pct:.1f}%")
+                except Exception as _e:
+                    logger.debug(f"Backtest: cromossomo evoluído não encontrado para {symbol}: {_e}")
+
+            # Prioridade 2: cromossomo do bot ativo salvo no banco
+            if chrom is None:
+                try:
+                    import httpx as _httpx
+                    _r2 = _httpx.get(f"{_backend}/api/bots/active?symbol={symbol}", timeout=3)
+                    if _r2.status_code == 200:
+                        _bot = _r2.json()
+                        _saved = _bot.get("cromossomo") or _bot.get("chromosome") or {}
+                        if _saved:
+                            chrom = Chromosome.from_dict(_saved)
+                            logger.info(f"Backtest: cromossomo do bot ativo ({_bot.get('id','?')}) | "
+                                        f"stop={chrom.stop_loss_pct:.1f}% tp={chrom.take_profit_pct:.1f}%")
+                except Exception as _e:
+                    logger.debug(f"Backtest: não foi possível buscar bot ativo: {_e}")
 
             if chrom is None:
                 # Cromossomos default calibrados por símbolo (volatilidade ATR TDD v1.0)
