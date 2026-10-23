@@ -1057,6 +1057,7 @@ async def backtest(req: BacktestRequest):
     entry_price = 0.0
     position_qty = 0.0
     trades_won  = 0
+    _ga_override = None  # campos extras GA — preenchido no bloco trading
 
     if tipo == "dca":
         # DCA: compra igual todo dia, realiza parcial no final
@@ -1101,53 +1102,91 @@ async def backtest(req: BacktestRequest):
         num_trades = max(len(trade_rets), 1)
 
     else:
-        # Trading / arbitragem: cruzamento SMA-10 x SMA-30 (ou fallback)
-        sma_fast = 10
-        sma_slow = min(30, n // 3)
-        if sma_slow < 5:
-            sma_slow = 5
-        sma_fast = min(sma_fast, sma_slow - 1) or 1
+        # Trading / arbitragem: usa a estratégia GA (4-componentes TDD v1.0)
+        # Carrega cromossomo salvo ou usa cromossomo fornecido na request
+        from src.core.ga_population import (
+            Chromosome, _backtest_vectorized, _compute_fitness_tdd, ATR_MULT_BY_ASSET
+        )
 
-        for i in range(n):
-            if i < sma_slow:
-                equity.append(round(capital + (position_qty * closes[i] if in_position else 0), 2))
-                continue
-            fast_avg = float(np.mean(closes[i-sma_fast:i]))
-            slow_avg = float(np.mean(closes[i-sma_slow:i]))
+        # 1. Monta cromossomo — prioridade: strategy_config > bot ativo > default evoluído
+        chrom_dict = cfg.get("cromossomo") or cfg.get("chromosome") or {}
+        if chrom_dict:
+            chrom = Chromosome.from_dict(chrom_dict)
+            logger.info(f"Backtest: cromossomo da request | stop={chrom.stop_loss_pct:.1f}% tp={chrom.take_profit_pct:.1f}%")
+        else:
+            # Tenta buscar cromossomo do bot ativo salvo no banco
+            chrom = None
+            try:
+                import httpx as _httpx
+                _backend = os.getenv("BACKEND_URL", "http://localhost:3020")
+                _r2 = _httpx.get(f"{_backend}/api/bots/active?symbol={symbol}", timeout=3)
+                if _r2.status_code == 200:
+                    _bot = _r2.json()
+                    _saved = _bot.get("cromossomo") or _bot.get("chromosome") or {}
+                    if _saved:
+                        chrom = Chromosome.from_dict(_saved)
+                        logger.info(f"Backtest: cromossomo do bot ativo ({_bot.get('id','?')}) | "
+                                    f"stop={chrom.stop_loss_pct:.1f}% tp={chrom.take_profit_pct:.1f}%")
+            except Exception as _e:
+                logger.debug(f"Backtest: não foi possível buscar bot ativo: {_e}")
 
-            if fast_avg > slow_avg and not in_position:
-                # Sinal de compra
-                position_qty = (capital * 0.95) / closes[i]
-                capital      = capital * 0.05
-                entry_price  = closes[i]
-                in_position  = True
+            if chrom is None:
+                # Usa cromossomo default calibrado (thresholds TDD v1.0)
+                chrom = Chromosome(
+                    w_rsi=0.30, w_macd=0.25, w_bollinger=0.25, w_ema=0.20,
+                    stop_loss_pct=2.0, take_profit_pct=4.0,
+                    capital_pct=0.003, atr_mult_bias=1.0,
+                )
+                chrom.normalize_weights()
+                logger.info("Backtest: cromossomo default GA (stop=2% tp=4% capital_pct=0.3%)")
 
-            elif fast_avg < slow_avg and in_position:
-                # Sinal de venda
-                gain    = position_qty * closes[i]
-                ret_pct = (closes[i] - entry_price) / entry_price
-                trade_rets.append(ret_pct)
-                if ret_pct > 0:
-                    trades_won += 1
-                capital     = capital + gain
-                position_qty = 0.0
-                in_position  = False
+        # 2. Roda o backtest vetorizado do GA sobre os candles históricos
+        closes_np = np.array(closes, dtype=float)
+        highs_np  = np.array([c[2] for c in raw], dtype=float)
+        lows_np   = np.array([c[3] for c in raw], dtype=float)
 
-            cur_val = capital + (position_qty * closes[i] if in_position else 0)
-            equity.append(round(cur_val, 2))
-
-        # Fecha posição aberta no final
-        if in_position and position_qty > 0:
-            final_sell = position_qty * closes[-1]
-            ret_pct    = (closes[-1] - entry_price) / entry_price
-            trade_rets.append(ret_pct)
-            if ret_pct > 0:
-                trades_won += 1
-            capital     = capital + final_sell
-            position_qty = 0.0
-            equity[-1]   = round(capital, 2)
-
+        bt_result = _backtest_vectorized(chrom, closes_np)
+        trade_rets = bt_result["returns"]
+        trades_won = sum(1 for r in trade_rets if r > 0)
         num_trades = max(len(trade_rets), 1)
+
+        # 3. Reconstrói equity curve a partir dos retornos por trade
+        #    (cada retorno é capital_pct do capital — risco fixo por trade)
+        capital = req.initial_capital
+        equity  = [round(capital, 2)]
+        for ret in trade_rets:
+            capital *= (1 + ret * chrom.capital_pct / 0.003)  # escala pelo risco real
+            equity.append(round(capital, 2))
+        # Completa equity até n+1 pontos (alinha com candles)
+        while len(equity) < n + 1:
+            equity.append(equity[-1])
+
+        # 4. Métricas via _compute_fitness_tdd (4-componentes)
+        metrics_ga = _compute_fitness_tdd(
+            returns       = trade_rets,
+            highs         = highs_np.tolist(),
+            lows          = lows_np.tolist(),
+            closes        = closes_np.tolist(),
+            symbol        = symbol,
+            atr_mult_bias = chrom.atr_mult_bias,
+        )
+
+        # Injeta métricas GA no resultado final (sobrescreve métricas abaixo)
+        _ga_override = {
+            "fitness_score":    metrics_ga.get("fitness", 0.0),
+            "rvp_hit_rate":     metrics_ga.get("rvp_hit", 0.0),
+            "calmar_ratio":     metrics_ga.get("calmar", 0.0),
+            "threshold_t":      metrics_ga.get("threshold_t", 0.55),
+            "c_sharpe":         metrics_ga.get("c_sharpe", 0.0),
+            "c_pf":             metrics_ga.get("c_pf", 0.0),
+            "c_mdd":            metrics_ga.get("c_mdd", 0.0),
+            "c_rvp":            metrics_ga.get("c_rvp", 0.0),
+            "disqualified":     metrics_ga.get("disqualified", False),
+            "disqualified_reason": metrics_ga.get("reason", None),
+            "cromossomo":       chrom.to_dict(),
+            "strategy_engine":  "GA_TDD_v1_4components",
+        }
+        # trade_rets, trades_won, num_trades já populados acima pelo GA
 
     # ── Métricas ─────────────────────────────────────────────────────────────
     final_capital = equity[-1]
@@ -1159,10 +1198,10 @@ async def backtest(req: BacktestRequest):
     sortino  = round(calculate_sortino_ratio(rets_arr.tolist()), 4)
     max_dd   = round(calculate_max_drawdown(rets_arr.tolist()) * 100, 2)
 
-    gains   = [r for r in trade_rets if r > 0]
-    losses  = [r for r in trade_rets if r < 0]
-    pf      = round(sum(gains) / abs(sum(losses)), 2) if losses and gains else (
-              1.0 if not losses else 0.0)
+    gains    = [r for r in trade_rets if r > 0]
+    losses   = [r for r in trade_rets if r < 0]
+    pf       = round(sum(gains) / abs(sum(losses)), 2) if losses and gains else (
+               1.0 if not losses else 0.0)
     win_rate = round((trades_won / num_trades) * 100, 2) if num_trades else 0.0
 
     # Equity curve normalizada (máx 60 pontos para o frontend)
@@ -1171,22 +1210,29 @@ async def backtest(req: BacktestRequest):
     if equity[-1] not in eq_sampled:
         eq_sampled.append(equity[-1])
 
-    return {
-        "total_return":   total_return,
-        "sharpe_ratio":   sharpe,
-        "sortino_ratio":  sortino,
-        "max_drawdown":   max_dd,
-        "num_trades":     num_trades,
-        "win_rate":       win_rate,
-        "profit_factor":  pf,
-        "equity_curve":   eq_sampled,
+    # Monta resposta base
+    response = {
+        "total_return":    total_return,
+        "sharpe_ratio":    sharpe,
+        "sortino_ratio":   sortino,
+        "max_drawdown":    max_dd,
+        "num_trades":      num_trades,
+        "win_rate":        win_rate,
+        "profit_factor":   pf,
+        "equity_curve":    eq_sampled,
         "initial_capital": req.initial_capital,
-        "final_capital":  round(final_capital, 2),
-        "symbol":         symbol,
-        "period":         f"{req.start_date} → {req.end_date}",
-        "candles_used":   n,
-        "tipo":           tipo,
+        "final_capital":   round(final_capital, 2),
+        "symbol":          symbol,
+        "period":          f"{req.start_date} → {req.end_date}",
+        "candles_used":    n,
+        "tipo":            tipo,
     }
+
+    # Adiciona campos GA (quando disponíveis — tipo trading/arbitragem)
+    if _ga_override:
+        response.update(_ga_override)
+
+    return response
 
 
 # ─── WEBSOCKET MONITOR ASG/RVP ──────────────────────────────
