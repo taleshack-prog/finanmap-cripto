@@ -6,6 +6,7 @@ Busca dados reais de exchanges: preços, OHLCV, order book, funding rate
 import ccxt
 import time
 import logging
+import requests
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,45 @@ def get_exchange(exchange_name: str = "binance", api_key: str = "", secret: str 
         raise ValueError(f"Exchange '{exchange_name}' não suportada pelo CCXT")
 
 
+_TF_MAP = {
+    "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
+    "1h": "1h", "2h": "2h", "4h": "4h", "6h": "6h", "8h": "8h", "12h": "12h",
+    "1d": "1d", "3d": "3d", "1w": "1w", "1M": "1M",
+}
+
+# Endpoints públicos da Binance (sem auth, sem geo-block na maioria dos casos)
+_BINANCE_PUBLIC_ENDPOINTS = [
+    "https://data-api.binance.vision/api/v3/klines",  # CDN público
+    "https://api.binance.com/api/v3/klines",
+    "https://api1.binance.com/api/v3/klines",
+    "https://api2.binance.com/api/v3/klines",
+]
+
+
+def _fetch_ohlcv_public(symbol: str, timeframe: str, limit: int) -> list:
+    """Busca OHLCV via endpoint HTTP público da Binance (sem autenticação)"""
+    tf = _TF_MAP.get(timeframe, "1h")
+    sym = symbol.replace("/", "")  # BTC/USDT -> BTCUSDT
+
+    for endpoint in _BINANCE_PUBLIC_ENDPOINTS:
+        try:
+            r = requests.get(
+                endpoint,
+                params={"symbol": sym, "interval": tf, "limit": limit},
+                timeout=12,
+            )
+            if r.status_code == 451:
+                logger.warning(f"451 em {endpoint}, tentando próximo...")
+                continue
+            r.raise_for_status()
+            return r.json()  # [[ts, o, h, l, c, v, ...], ...]
+        except requests.RequestException as e:
+            logger.warning(f"Falha em {endpoint}: {e}")
+            continue
+
+    raise ConnectionError(f"Todos endpoints Binance bloqueados para {symbol}")
+
+
 def get_ohlcv(
     symbol:        str = "BTC/USDT",
     timeframe:     str = "1h",
@@ -60,6 +100,7 @@ def get_ohlcv(
 ) -> dict:
     """
     Busca dados OHLCV (candles) reais.
+    Tenta endpoint público CDN primeiro (sem geo-block), fallback para CCXT.
     Retorna: opens, highs, lows, closes, volumes, timestamps
     """
     cache_key = f"ohlcv_{exchange_name}_{symbol}_{timeframe}_{limit}"
@@ -68,31 +109,43 @@ def get_ohlcv(
         logger.info(f"Cache hit: {cache_key}")
         return cached
 
-    try:
-        exchange = get_exchange(exchange_name, api_key, secret)
-        raw = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+    raw = None
 
-        result = {
-            "symbol":     symbol,
-            "timeframe":  timeframe,
-            "exchange":   exchange_name,
-            "timestamps": [r[0] for r in raw],
-            "opens":      [r[1] for r in raw],
-            "highs":      [r[2] for r in raw],
-            "lows":       [r[3] for r in raw],
-            "closes":     [r[4] for r in raw],
-            "volumes":    [r[5] for r in raw],
-            "count":      len(raw),
-        }
+    # Tenta endpoint público primeiro (contorna geo-bloqueio)
+    if exchange_name == "binance":
+        try:
+            raw_json = _fetch_ohlcv_public(symbol, timeframe, limit)
+            raw = [[r[0], float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])] for r in raw_json]
+            logger.info(f"OHLCV público {symbol} {timeframe}: {len(raw)} candles")
+        except Exception as e:
+            logger.warning(f"Endpoint público falhou, tentando CCXT: {e}")
 
-        _cache_set(cache_key, result)
-        logger.info(f"OHLCV {symbol} {timeframe}: {len(raw)} candles")
-        return result
+    # Fallback CCXT
+    if raw is None:
+        try:
+            exchange = get_exchange(exchange_name, api_key, secret)
+            raw = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+            logger.info(f"OHLCV CCXT {symbol} {timeframe}: {len(raw)} candles")
+        except ccxt.NetworkError as e:
+            raise ConnectionError(f"Erro de rede ao buscar {symbol}: {e}")
+        except ccxt.ExchangeError as e:
+            raise ValueError(f"Erro da exchange ao buscar {symbol}: {e}")
 
-    except ccxt.NetworkError as e:
-        raise ConnectionError(f"Erro de rede ao buscar {symbol}: {e}")
-    except ccxt.ExchangeError as e:
-        raise ValueError(f"Erro da exchange ao buscar {symbol}: {e}")
+    result = {
+        "symbol":     symbol,
+        "timeframe":  timeframe,
+        "exchange":   exchange_name,
+        "timestamps": [r[0] for r in raw],
+        "opens":      [r[1] for r in raw],
+        "highs":      [r[2] for r in raw],
+        "lows":       [r[3] for r in raw],
+        "closes":     [r[4] for r in raw],
+        "volumes":    [r[5] for r in raw],
+        "count":      len(raw),
+    }
+
+    _cache_set(cache_key, result)
+    return result
 
 
 def get_ticker(
