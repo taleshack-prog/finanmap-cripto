@@ -160,7 +160,7 @@ async def _get_funding_rate_stress(symbol: str = "BTC/USDT") -> dict:
 
     try:
         import ccxt
-        exchange = ccxt.binance()
+        exchange = ccxt.binance({"hostname": "api-gcp.binance.com", "enableRateLimit": True})
         perp_sym = f"{symbol}/USDT:USDT"
         info     = exchange.fetch_funding_rate(perp_sym)
         rate     = float(info.get("fundingRate", 0) or 0)

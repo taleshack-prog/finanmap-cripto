@@ -70,7 +70,8 @@ def get_binance_balances(api_key: str, secret: str) -> list:
             "apiKey":          api_key,
             "secret":          secret,
             "enableRateLimit": True,
-            "timeout":         10000,   # 10 segundos máximo
+            "timeout":         10000,
+            "hostname":        "api-gcp.binance.com",
             "options": {
                 "defaultType": "spot",
                 "fetchTickerQuote": False,
@@ -187,6 +188,7 @@ def get_binance_balances_fast(api_key: str, secret: str) -> list:
     exchange = ccxt.binance({
         "apiKey": api_key, "secret": secret,
         "enableRateLimit": True, "timeout": 10000,
+        "hostname": "api-gcp.binance.com",
         "options": {"defaultType": "spot", "fetchTickerQuote": False, "fetchCurrencies": False}
     })
 
@@ -231,6 +233,7 @@ def get_prices_for_symbols(symbols: list) -> dict:
     """Busca preços atuais para lista de símbolos"""
     exchange = ccxt.binance({
         "enableRateLimit": True, "timeout": 10000,
+        "hostname": "api-gcp.binance.com",
         "options": {"defaultType": "spot", "fetchCurrencies": False}
     })
     prices = {}

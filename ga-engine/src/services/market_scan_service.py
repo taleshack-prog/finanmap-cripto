@@ -116,6 +116,7 @@ async def scan_market(
                 "secret":          secret,
                 "enableRateLimit": True,
                 "timeout":         15000,
+                "hostname":        "api-gcp.binance.com",
                 "options":         {"defaultType": "spot", "fetchCurrencies": False},
             })
 

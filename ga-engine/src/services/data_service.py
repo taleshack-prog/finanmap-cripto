@@ -32,7 +32,7 @@ def get_exchange(exchange_name: str = "binance", api_key: str = "", secret: str 
         exchange_class = getattr(ccxt, exchange_name)
         params = {
             "enableRateLimit": True,
-            "timeout": 10000,  # 10 segundos máximo
+            "timeout": 15000,
             "options": {
                 "defaultType": "spot",
             }
@@ -40,6 +40,11 @@ def get_exchange(exchange_name: str = "binance", api_key: str = "", secret: str 
         if api_key:
             params["apiKey"] = api_key
             params["secret"] = secret
+
+        # Binance: usar hostname alternativo para contornar geo-bloqueio 451
+        if exchange_name == "binance":
+            params["hostname"] = "api-gcp.binance.com"
+
         return exchange_class(params)
     except AttributeError:
         raise ValueError(f"Exchange '{exchange_name}' não suportada pelo CCXT")
