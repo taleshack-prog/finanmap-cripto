@@ -1131,14 +1131,31 @@ async def backtest(req: BacktestRequest):
                 logger.debug(f"Backtest: não foi possível buscar bot ativo: {_e}")
 
             if chrom is None:
-                # Usa cromossomo default calibrado (thresholds TDD v1.0)
-                chrom = Chromosome(
-                    w_rsi=0.30, w_macd=0.25, w_bollinger=0.25, w_ema=0.20,
-                    stop_loss_pct=2.0, take_profit_pct=4.0,
-                    capital_pct=0.003, atr_mult_bias=1.0,
-                )
+                # Cromossomos default calibrados por símbolo (volatilidade ATR TDD v1.0)
+                # ETH/SOL/SUI têm maior volatilidade → stop/tp mais largos, capital menor
+                _DEFAULTS_BY_SYMBOL = {
+                    "BTC/USDT": dict(w_rsi=0.30, w_macd=0.25, w_bollinger=0.25, w_ema=0.20,
+                                     stop_loss_pct=2.0, take_profit_pct=4.0, capital_pct=0.003, atr_mult_bias=1.0),
+                    "ETH/USDT": dict(w_rsi=0.25, w_macd=0.30, w_bollinger=0.25, w_ema=0.20,
+                                     stop_loss_pct=3.0, take_profit_pct=6.0, capital_pct=0.002, atr_mult_bias=1.6),
+                    "SOL/USDT": dict(w_rsi=0.20, w_macd=0.30, w_bollinger=0.30, w_ema=0.20,
+                                     stop_loss_pct=3.5, take_profit_pct=7.0, capital_pct=0.002, atr_mult_bias=1.8),
+                    "XRP/USDT": dict(w_rsi=0.30, w_macd=0.25, w_bollinger=0.25, w_ema=0.20,
+                                     stop_loss_pct=2.5, take_profit_pct=5.0, capital_pct=0.002, atr_mult_bias=1.2),
+                    "BNB/USDT": dict(w_rsi=0.30, w_macd=0.25, w_bollinger=0.25, w_ema=0.20,
+                                     stop_loss_pct=2.5, take_profit_pct=5.0, capital_pct=0.002, atr_mult_bias=1.2),
+                    "SUI/USDT": dict(w_rsi=0.20, w_macd=0.30, w_bollinger=0.30, w_ema=0.20,
+                                     stop_loss_pct=4.0, take_profit_pct=8.0, capital_pct=0.0015, atr_mult_bias=1.7),
+                    "ADA/USDT": dict(w_rsi=0.25, w_macd=0.30, w_bollinger=0.25, w_ema=0.20,
+                                     stop_loss_pct=3.0, take_profit_pct=6.0, capital_pct=0.002, atr_mult_bias=1.4),
+                }
+                _sym_clean = symbol.replace("-", "/").upper()
+                _d = _DEFAULTS_BY_SYMBOL.get(_sym_clean, _DEFAULTS_BY_SYMBOL["BTC/USDT"])
+                chrom = Chromosome(**_d)
                 chrom.normalize_weights()
-                logger.info("Backtest: cromossomo default GA (stop=2% tp=4% capital_pct=0.3%)")
+                logger.info(f"Backtest: cromossomo default calibrado para {_sym_clean} "
+                            f"(stop={_d['stop_loss_pct']}% tp={_d['take_profit_pct']}% "
+                            f"atr_bias={_d['atr_mult_bias']})")
 
         # 2. Roda o backtest vetorizado do GA sobre os candles históricos
         closes_np = np.array(closes, dtype=float)
