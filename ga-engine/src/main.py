@@ -65,7 +65,12 @@ app = FastAPI(
 
 @app.on_event("startup")
 async def startup_event():
-    asyncio.create_task(restore_active_bots())
+    async def _safe_restore():
+        try:
+            await restore_active_bots()
+        except Exception as e:
+            logger.warning(f"restore_active_bots falhou (ignorado): {e}")
+    asyncio.create_task(_safe_restore())
 
     # Warmup cache do bot/list
     async def _warmup_bot_list():
@@ -112,10 +117,20 @@ async def startup_event():
     logger.info("⏰ Agendador semanal iniciado — re-evolução todo domingo às 02h")
 
     async def market_scan_job():
-        await run_market_scan(BINANCE_KEY, BINANCE_SECRET)
+        try:
+            await run_market_scan(BINANCE_KEY, BINANCE_SECRET)
+        except Exception as e:
+            logger.warning(f"MarketScan falhou (ignorado): {e}")
 
     scheduler.add_job(market_scan_job, "interval", hours=4, id="market_scan")
-    asyncio.create_task(run_market_scan(BINANCE_KEY, BINANCE_SECRET))
+
+    async def _initial_market_scan():
+        try:
+            await run_market_scan(BINANCE_KEY, BINANCE_SECRET)
+        except Exception as e:
+            logger.warning(f"MarketScan inicial falhou (ignorado): {e}")
+
+    asyncio.create_task(_initial_market_scan())
     logger.info("🔍 MarketScan agendado — a cada 4h")
 
 app.add_middleware(
