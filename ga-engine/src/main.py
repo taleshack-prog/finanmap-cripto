@@ -1297,7 +1297,7 @@ async def backtest(req: BacktestRequest):
         highs_np  = np.array([c[2] for c in raw], dtype=float)
         lows_np   = np.array([c[3] for c in raw], dtype=float)
 
-        bt_result = _backtest_vectorized(chrom, closes_np)
+        bt_result = _backtest_vectorized(chrom, closes_np, highs_np, lows_np, req.symbol)
         trade_rets = bt_result["returns"]
         trades_won = sum(1 for r in trade_rets if r > 0)
         num_trades = max(len(trade_rets), 1)

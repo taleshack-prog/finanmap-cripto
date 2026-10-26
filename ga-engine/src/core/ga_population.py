@@ -69,10 +69,9 @@ GENE_RANGES = {
     "take_profit_pct": (2.0,  8.0),    # take profit % (RR mínimo 1:2 §5.3)
     "capital_pct":     (0.0025, 0.005), # risco por trade 0.25–0.5% do capital §5.3
     "atr_mult_bias":   (0.8,  1.2),    # bias no multiplicador ATR (mutação ±0.1)
+    "adx_threshold":   (18.0, 32.0),   # limiar ADX para regime trend/range
+    "atr_stop_mult":   (1.0,  3.0),    # multiplicador ATR para stop adaptativo
 }
-GENE_NAMES = list(GENE_RANGES.keys())
-
-
 GENE_NAMES = list(GENE_RANGES.keys())
 
 
@@ -86,6 +85,8 @@ class Chromosome:
     take_profit_pct: float = 4.0
     capital_pct:     float = 0.003   # 0.3% risco por trade (TDD §5.3)
     atr_mult_bias:   float = 1.0     # bias do multiplicador ATR
+    adx_threshold:   float = 25.0   # limiar ADX: >valor = trend, <valor = range
+    atr_stop_mult:   float = 1.5    # multiplicador ATR para stop adaptativo
 
     def normalize_weights(self):
         total = self.w_rsi + self.w_macd + self.w_bollinger + self.w_ema
@@ -197,9 +198,94 @@ def _compute_signals(closes: np.ndarray) -> dict:
     }
 
 
+# ─── INDICADORES DE REGIME ──────────────────────────────────
+
+def _compute_atr_np(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 14) -> np.ndarray:
+    """ATR série completa em numpy."""
+    n = len(closes)
+    tr = np.full(n, np.nan)
+    for i in range(1, n):
+        tr[i] = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i] - closes[i - 1]),
+        )
+    atr = np.full(n, np.nan)
+    if n >= period + 1:
+        atr[period] = np.nanmean(tr[1:period + 1])
+        for i in range(period + 1, n):
+            atr[i] = (atr[i - 1] * (period - 1) + tr[i]) / period
+    return atr
+
+
+def _compute_adx(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 14) -> np.ndarray:
+    """
+    ADX (Average Directional Index) vetorizado.
+    ADX > 25 → mercado em tendência → entradas ativas.
+    ADX < 20 → mercado lateral    → pular entradas.
+    """
+    n = len(closes)
+    adx = np.full(n, np.nan)
+    if n < period * 2 + 2:
+        return adx
+
+    # True Range e Directional Movement
+    tr   = np.full(n, 0.0)
+    dm_p = np.full(n, 0.0)
+    dm_n = np.full(n, 0.0)
+
+    for i in range(1, n):
+        h_diff = highs[i]  - highs[i - 1]
+        l_diff = lows[i - 1] - lows[i]
+        tr[i]   = max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
+        dm_p[i] = h_diff if h_diff > l_diff and h_diff > 0 else 0.0
+        dm_n[i] = l_diff if l_diff > h_diff and l_diff > 0 else 0.0
+
+    # Wilder smooth
+    atr_s  = np.full(n, 0.0)
+    dip_s  = np.full(n, 0.0)
+    din_s  = np.full(n, 0.0)
+    atr_s[period]  = np.sum(tr[1:period + 1])
+    dip_s[period]  = np.sum(dm_p[1:period + 1])
+    din_s[period]  = np.sum(dm_n[1:period + 1])
+
+    for i in range(period + 1, n):
+        atr_s[i] = atr_s[i - 1] - atr_s[i - 1] / period + tr[i]
+        dip_s[i] = dip_s[i - 1] - dip_s[i - 1] / period + dm_p[i]
+        din_s[i] = din_s[i - 1] - din_s[i - 1] / period + dm_n[i]
+
+    # DI+ / DI- / DX
+    with np.errstate(divide='ignore', invalid='ignore'):
+        di_p = np.where(atr_s > 0, 100 * dip_s / atr_s, 0.0)
+        di_n = np.where(atr_s > 0, 100 * din_s / atr_s, 0.0)
+        dx   = np.where(di_p + di_n > 0, 100 * np.abs(di_p - di_n) / (di_p + di_n), 0.0)
+
+    # ADX = Wilder smooth de DX
+    start = period * 2
+    if start < n:
+        adx[start] = np.mean(dx[period:start])
+        for i in range(start + 1, n):
+            adx[i] = (adx[i - 1] * (period - 1) + dx[i]) / period
+
+    return adx
+
+
 # ─── BACKTEST VETORIZADO ────────────────────────────────────
 
-def _backtest_vectorized(chromosome: Chromosome, closes: np.ndarray) -> dict:
+def _backtest_vectorized(
+    chromosome: Chromosome,
+    closes: np.ndarray,
+    highs: np.ndarray = None,
+    lows:  np.ndarray = None,
+    symbol: str = None,
+) -> dict:
+    """
+    Backtest com:
+    - Filtro de Regime ADX: só entra quando ADX > adx_threshold (mercado em tendência)
+    - Stop ATR Adaptativo: stop_price = entry * (1 - atr_at_entry/entry * stop_mult)
+      onde stop_mult = ATR_MULT_BY_ASSET[symbol] * chromosome.atr_mult_bias * chromosome.atr_stop_mult
+    - Fallback gracioso: se highs/lows ausentes, usa comportamento legado (stop fixo, sem ADX)
+    """
     signals = _compute_signals(closes)
     score = (
         chromosome.w_rsi       * signals["rsi"]  +
@@ -207,6 +293,21 @@ def _backtest_vectorized(chromosome: Chromosome, closes: np.ndarray) -> dict:
         chromosome.w_bollinger * signals["bb"]   +
         chromosome.w_ema       * signals["ema"]
     )
+
+    # ── Regime ADX e ATR ──────────────────────────────────────
+    use_adaptive = (highs is not None and lows is not None and
+                    len(highs) == len(closes) and len(lows) == len(closes))
+
+    if use_adaptive:
+        atr_series = _compute_atr_np(highs, lows, closes, period=14)
+        adx_series = _compute_adx(highs, lows, closes, period=14)
+        asset_mult = ATR_MULT_BY_ASSET.get(symbol, ATR_MULT_DEFAULT) if symbol else ATR_MULT_DEFAULT
+        stop_mult  = asset_mult * getattr(chromosome, 'atr_mult_bias', 1.0) * getattr(chromosome, 'atr_stop_mult', 1.5)
+        adx_thresh = getattr(chromosome, 'adx_threshold', 25.0)
+    else:
+        atr_series = adx_series = None
+        stop_mult  = None
+        adx_thresh = None
 
     returns  = []
     position = None
@@ -219,23 +320,58 @@ def _backtest_vectorized(chromosome: Chromosome, closes: np.ndarray) -> dict:
             continue
 
         if position is not None:
-            entry   = position["entry_price"]
-            pnl_pct = (price - entry) / entry * 100
-            if pnl_pct <= -chromosome.stop_loss_pct:
-                returns.append(-chromosome.stop_loss_pct / 100)
+            entry      = position["entry_price"]
+            stop_price = position["stop_price"]
+            tp_price   = position["tp_price"]
+
+            # Stop loss (adaptativo ATR ou fixo)
+            if price <= stop_price:
+                pnl = (price - entry) / entry
+                returns.append(pnl)
                 position = None
                 continue
-            if pnl_pct >= chromosome.take_profit_pct:
-                returns.append(chromosome.take_profit_pct / 100)
+            # Take profit
+            if price >= tp_price:
+                pnl = (price - entry) / entry
+                returns.append(pnl)
                 position = None
                 continue
+            # Sinal de reversão
             if s < -0.05:
                 returns.append((price - entry) / entry)
                 position = None
                 continue
 
         if position is None and s > 0.05:
-            position = {"entry_price": price, "entry_idx": i}
+            # ── Filtro de Regime: só entra em tendência ───────
+            if use_adaptive:
+                adx_val = adx_series[i]
+                if np.isnan(adx_val) or adx_val < adx_thresh:
+                    continue   # mercado lateral → pula entrada
+
+            # ── Calcular stops ────────────────────────────────
+            if use_adaptive:
+                atr_val = atr_series[i]
+                if np.isnan(atr_val) or atr_val <= 0:
+                    # fallback para stop fixo se ATR inválido
+                    stop_price = price * (1 - chromosome.stop_loss_pct / 100)
+                    tp_price   = price * (1 + chromosome.take_profit_pct / 100)
+                else:
+                    stop_dist  = atr_val * stop_mult
+                    stop_price = price - stop_dist
+                    # TP mantém RR mínimo 2:1 relativo ao stop real
+                    tp_dist    = max(stop_dist * 2, price * chromosome.take_profit_pct / 100)
+                    tp_price   = price + tp_dist
+            else:
+                stop_price = price * (1 - chromosome.stop_loss_pct / 100)
+                tp_price   = price * (1 + chromosome.take_profit_pct / 100)
+
+            position = {
+                "entry_price": price,
+                "entry_idx":   i,
+                "stop_price":  stop_price,
+                "tp_price":    tp_price,
+            }
 
     if position is not None:
         returns.append((closes[-1] - position["entry_price"]) / position["entry_price"])
@@ -455,7 +591,8 @@ class GAPopulation:
 
     def _evaluate(self, ind: Individual) -> Individual:
         try:
-            result  = _backtest_vectorized(ind.chromosome, self.closes_np)
+            result  = _backtest_vectorized(ind.chromosome, self.closes_np,
+                                           self.highs_np, self.lows_np, self.symbol)
             metrics = _compute_fitness_tdd(
                 returns       = result["returns"],
                 highs         = self.highs_np.tolist(),
@@ -538,9 +675,12 @@ class GAPopulation:
 
         # ── Validação Monte Carlo 1000 iterações (TDD §3.7.4) ─────────────────
         # Simula distribuição de retornos via bootstrap e verifica se fitness melhora
+        _h = getattr(self, 'highs_np', None)
+        _l = getattr(self, 'lows_np',  None)
         if self.closes_np is not None and len(self.closes_np) >= 50:
             try:
-                bt_new = _backtest_vectorized(ind.chromosome, self.closes_np)
+                bt_new = _backtest_vectorized(ind.chromosome, self.closes_np,
+                                              _h, _l, self.symbol)
                 if len(bt_new["returns"]) >= 3:
                     arr = np.array(bt_new["returns"])
                     # Bootstrap 1000 amostras — verifica se Sharpe mediano ≥ 0
