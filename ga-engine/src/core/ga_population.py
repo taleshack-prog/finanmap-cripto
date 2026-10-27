@@ -321,7 +321,9 @@ def _backtest_vectorized(
 
     returns  = []
     position = None
-    min_idx  = 50
+    # warm-up dinâmico: 26 candles (mínimo EMA26) para séries curtas,
+    # 50 candles para séries longas (≥200) onde temos dados suficientes
+    min_idx  = 26 if n_candles < 200 else 50
 
     for i in range(min_idx, len(closes)):
         s     = score[i]
