@@ -310,10 +310,12 @@ def _backtest_vectorized(
         adx_series = _compute_adx(highs, lows, closes, period=_atr_period)
         asset_mult = ATR_MULT_BY_ASSET.get(symbol, ATR_MULT_DEFAULT) if symbol else ATR_MULT_DEFAULT
         stop_mult  = asset_mult * getattr(chromosome, 'atr_mult_bias', 1.0) * getattr(chromosome, 'atr_stop_mult', 1.5)
-        # Threshold reduzido para séries diárias curtas (ADX diário é naturalmente menor)
+        # Threshold adaptativo ao número de candles disponíveis:
+        # ADX diário tem média ~16 (random walk), ADX horário ~18-20
+        # Ajustamos o cap para permitir trades suficientes
         adx_thresh = getattr(chromosome, 'adx_threshold', 25.0)
         if n_candles < 200:
-            adx_thresh = min(adx_thresh, 20.0)   # relaxa filtro em dados diários
+            adx_thresh = min(adx_thresh, 15.0)   # dados diários: cap em 15 (média ADX ~16)
     else:
         atr_series = adx_series = None
         stop_mult  = None
