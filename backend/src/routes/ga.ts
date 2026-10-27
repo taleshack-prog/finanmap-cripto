@@ -486,7 +486,7 @@ router.post('/save-evolved', async (req, res: Response) => {
       return res.json({ success: true, action: 'updated', symbol, fitnessScore })
     } else {
       // Precisa de um userId válido — usa o primeiro user admin ou cria registro system
-      const firstUser = await prisma.user.findFirst({ orderBy: { dataCriacao: 'asc' } })
+      const firstUser = await prisma.user.findFirst({ orderBy: { criadoEm: 'asc' } })
       if (!firstUser) return res.status(503).json({ error: 'Nenhum usuário no banco ainda' })
       await prisma.estrategia.create({
         data: {

@@ -42,9 +42,9 @@ router.get('/summary', authenticate, async (req: AuthRequest, res: Response) => 
 
     const wins        = trades.filter(t => Number(t.lucro) > 0);
     const losses      = trades.filter(t => Number(t.lucro) < 0);
-    const lucroTotal  = trades.reduce((s, t) => s + Number(t.lucro || 0), 0);
-    const lucroWins   = wins.reduce((s, t) => s + Number(t.lucro || 0), 0);
-    const lucroLosses = losses.reduce((s, t) => s + Math.abs(Number(t.lucro || 0)), 0);
+    const lucroTotal  = trades.reduce((s: number, t) => s + Number(t.lucro || 0), 0);
+    const lucroWins   = wins.reduce((s: number, t) => s + Number(t.lucro || 0), 0);
+    const lucroLosses = losses.reduce((s: number, t) => s + Math.abs(Number(t.lucro || 0)), 0);
 
     res.json({
       totalTrades:   await prisma.trade.count({ where: { userId: req.user!.userId } }),
