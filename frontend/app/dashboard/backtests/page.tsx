@@ -230,7 +230,7 @@ export default function BacktestsPage() {
                   cursor: 'pointer', borderLeft: `3px solid ${selected?.id === b.id ? '#ff0080' : 'transparent'}`,
                   padding: '0.85rem', paddingRight: '2.2rem', transition: 'all 0.2s',
                 }}>
-                  <div style={{ fontSize: '11px', fontWeight: 700, color: '#fff', marginBottom: '4px' }}>{b.nome.replace(/ — .*/, '')}</div>
+                  <div style={{ fontSize: '11px', fontWeight: 700, color: '#fff', marginBottom: '4px' }} title={b.nome}>{b.nome.replace(/ — .*/, '')}</div>
                   <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.35)', marginBottom: '6px' }}>{b.par} · {b.tipo}</div>
                   <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                     <span style={{ fontSize: '12px', fontWeight: 700, color: b.status === 'erro' ? '#ff4444' : b.total_return >= 0 ? '#00ff88' : '#ff4444' }}>
@@ -253,7 +253,18 @@ export default function BacktestsPage() {
             ))}
           </div>
 
-          {/* Detalhe */}
+          {/* Detalhe — ERRO */}
+          {bt && bt.status === 'erro' && (
+            <div style={{ ...glass('rgba(255,68,68,0.1)'), padding: '1.5rem', borderLeft: '3px solid #ff4444' }}>
+              <div style={{ fontSize: '11px', color: '#ff4444', fontWeight: 700, marginBottom: '0.5rem' }}>✕ BACKTEST FALHOU</div>
+              <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.5)', marginBottom: '0.75rem' }}>{bt.par} · {bt.tipo} · {bt.periodo}</div>
+              <div style={{ fontSize: '12px', color: '#ffaaaa', wordBreak: 'break-all', lineHeight: 1.6 }}>
+                {bt.nome.includes(' — ') ? bt.nome.split(' — ').slice(1).join(' — ') : 'Erro desconhecido — verifique o console do navegador (F12)'}
+              </div>
+            </div>
+          )}
+
+          {/* Detalhe — SUCESSO */}
           {bt && bt.status === 'concluido' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
 
