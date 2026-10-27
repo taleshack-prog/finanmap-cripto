@@ -154,11 +154,14 @@ def _compute_rsi(closes: np.ndarray, period: int = 14) -> np.ndarray:
     return np.concatenate([pad, rsi])
 
 def _compute_ema(closes: np.ndarray, period: int) -> np.ndarray:
+    n   = len(closes)
+    ema = np.full(n, np.nan)
+    if n < period:
+        return ema   # série muito curta — retorna tudo NaN (sinal zerado)
     k   = 2 / (period + 1)
-    ema = np.full(len(closes), np.nan)
     s   = period - 1
     ema[s] = np.mean(closes[:period])
-    for i in range(s + 1, len(closes)):
+    for i in range(s + 1, n):
         ema[i] = closes[i] * k + ema[i-1] * (1 - k)
     return ema
 
@@ -295,15 +298,22 @@ def _backtest_vectorized(
     )
 
     # ── Regime ADX e ATR ──────────────────────────────────────
+    n_candles = len(closes)
     use_adaptive = (highs is not None and lows is not None and
-                    len(highs) == len(closes) and len(lows) == len(closes))
+                    len(highs) == n_candles and len(lows) == n_candles and
+                    n_candles >= 60)   # mínimo para ADX ser confiável
 
     if use_adaptive:
-        atr_series = _compute_atr_np(highs, lows, closes, period=14)
-        adx_series = _compute_adx(highs, lows, closes, period=14)
+        # Período menor para séries curtas (< 200 candles) evita NaN excessivo
+        _atr_period = 14 if n_candles >= 200 else max(7, n_candles // 15)
+        atr_series = _compute_atr_np(highs, lows, closes, period=_atr_period)
+        adx_series = _compute_adx(highs, lows, closes, period=_atr_period)
         asset_mult = ATR_MULT_BY_ASSET.get(symbol, ATR_MULT_DEFAULT) if symbol else ATR_MULT_DEFAULT
         stop_mult  = asset_mult * getattr(chromosome, 'atr_mult_bias', 1.0) * getattr(chromosome, 'atr_stop_mult', 1.5)
+        # Threshold reduzido para séries diárias curtas (ADX diário é naturalmente menor)
         adx_thresh = getattr(chromosome, 'adx_threshold', 25.0)
+        if n_candles < 200:
+            adx_thresh = min(adx_thresh, 20.0)   # relaxa filtro em dados diários
     else:
         atr_series = adx_series = None
         stop_mult  = None
